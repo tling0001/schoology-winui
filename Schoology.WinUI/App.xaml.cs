@@ -62,7 +62,25 @@ public partial class App : Application
                 .AppendLine(message);
 
             if (exception is not null)
+            {
+                for (Exception? current = exception; current is not null; current = current.InnerException)
+                {
+                    entry.Append("Exception detail: ")
+                        .Append(current.GetType().FullName)
+                        .Append(" | HRESULT=0x")
+                        .Append(current.HResult.ToString("X8"))
+                        .Append(" | ")
+                        .AppendLine(current.Message);
+                    entry.AppendLine(current.StackTrace);
+                }
+                if (exception.Data.Count > 0)
+                {
+                    entry.AppendLine("Exception data:");
+                    foreach (System.Collections.DictionaryEntry item in exception.Data)
+                        entry.Append(item.Key).Append(" = ").AppendLine(item.Value?.ToString());
+                }
                 entry.AppendLine(exception.ToString());
+            }
 
             File.AppendAllText(LogPath, entry.ToString());
         }
