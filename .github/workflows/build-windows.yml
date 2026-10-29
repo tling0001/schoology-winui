@@ -72,7 +72,8 @@ jobs:
             if ($command) { $iscc = $command.Source }
           }
           if (!$iscc) { throw 'Inno Setup compiler was not found in the standard install locations.' }
-          & $iscc /DArchitecture=${{ matrix.architecture }} /DSourceDir="publish\${{ matrix.rid }}" installer\Schoology-WinUI.iss
+          $sourceDir = Join-Path $env:GITHUB_WORKSPACE "publish\${{ matrix.rid }}"
+          & $iscc "/DArchitecture=${{ matrix.architecture }}" "/DSourceDir=$sourceDir" "installer\Schoology-WinUI.iss"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Upload installer and published files
