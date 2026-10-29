@@ -15,7 +15,6 @@
     <Version>1.0.1</Version>
     <AssemblyName>Schoology.WinUI</AssemblyName>
     <ApplicationIcon>Assets\\Schoology.ico</ApplicationIcon>
-    <ApplicationIcon>Assets\\Schoology.ico</ApplicationIcon>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.8.260803003" />
@@ -33,4 +32,10 @@
       SkipUnchangedFiles="true"
       Condition="'@(_WinUIResourceIndex)' != ''" />
   </Target>
+  <ItemGroup>
+    <EmbeddedResource Include="Assets\\logo_schoology.png" />
+    <EmbeddedResource Include="Assets\\ic_school.svg" />
+    <EmbeddedResource Include="Assets\\ic_sgy_logo.svg" />
+    <EmbeddedResource Include="Assets\\ic_qr_code.svg" />
+  </ItemGroup>
 </Project>
