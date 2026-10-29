@@ -21,17 +21,41 @@ public sealed partial class MainWindow : Window
 
     public MainWindow()
     {
+        App.WriteStartupLog("MainWindow constructor entered.");
         InitializeComponent();
+        App.WriteStartupLog("MainWindow.InitializeComponent completed.");
+
         _root = Root;
         Title = "Schoology";
         ExtendsContentIntoTitleBar = false;
-        SetWindowSize(1260, 820);
-        ShowSplash();
-        _splashTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(1500) };
-        _splashTimer.Tick += (_, _) => { _splashTimer.Stop(); ShowLogin(); };
-        _splashTimer.Start();
-    }
 
+        App.WriteStartupLog("Setting initial window size.");
+        SetWindowSize(1260, 820);
+        App.WriteStartupLog("Initial window size step completed.");
+
+        App.WriteStartupLog("Creating splash screen.");
+        ShowSplash();
+        App.WriteStartupLog("Splash screen created.");
+
+        _splashTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(1500) };
+        _splashTimer.Tick += (_, _) =>
+        {
+            try
+            {
+                App.WriteStartupLog("Splash timer tick; switching to login.");
+                _splashTimer.Stop();
+                ShowLogin();
+                App.WriteStartupLog("Login screen created.");
+            }
+            catch (Exception ex)
+            {
+                App.WriteStartupLog("Exception while switching from splash to login.", ex);
+                throw;
+            }
+        };
+        _splashTimer.Start();
+        App.WriteStartupLog("Splash timer started.");
+    }
     [DllImport("user32.dll")] private static extern uint GetDpiForWindow(IntPtr hwnd);
     private void SetWindowSize(int widthDip, int heightDip)
     {
