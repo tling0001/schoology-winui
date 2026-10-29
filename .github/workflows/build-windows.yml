@@ -58,9 +58,21 @@ jobs:
       - name: Build per-user installer for the Tauri install directory
         shell: pwsh
         run: |
-          $iscc = Get-ChildItem 'C:\Program Files (x86)\Inno Setup' -Filter 'ISCC.exe' -Recurse | Select-Object -First 1
-          if (!$iscc) { throw 'Inno Setup compiler was not found.' }
-          & $iscc.FullName /DArchitecture=${{ matrix.architecture }} /DSourceDir="publish\${{ matrix.rid }}" installer\Schoology-WinUI.iss
+          $iscc = $null
+          $candidates = @(
+            "$env:ProgramFiles(x86)\Inno Setup 6\ISCC.exe",
+            "$env:ProgramFiles\Inno Setup 6\ISCC.exe",
+            "$env:ChocolateyInstall\lib\innosetup\tools\ISCC.exe"
+          )
+          foreach ($candidate in $candidates) {
+            if (Test-Path $candidate) { $iscc = $candidate; break }
+          }
+          if (!$iscc) {
+            $command = Get-Command ISCC.exe -ErrorAction SilentlyContinue
+            if ($command) { $iscc = $command.Source }
+          }
+          if (!$iscc) { throw 'Inno Setup compiler was not found in the standard install locations.' }
+          & $iscc /DArchitecture=${{ matrix.architecture }} /DSourceDir="publish\${{ matrix.rid }}" installer\Schoology-WinUI.iss
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Upload installer and published files
