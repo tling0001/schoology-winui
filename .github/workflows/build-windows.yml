@@ -1,38 +1,70 @@
 name: Build Schoology WinUI 3
+
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
   workflow_dispatch:
+
 permissions:
   contents: read
+
 jobs:
   build:
+    name: Build and package (${{ matrix.architecture }})
     runs-on: windows-latest
     strategy:
       fail-fast: false
       matrix:
-        architecture: [x64, ARM64]
+        include:
+          - architecture: x64
+            rid: win-x64
+          - architecture: ARM64
+            rid: win-arm64
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Setup .NET
+
+      - name: Setup .NET 8
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 8.0.x
+
       - name: Restore
-        run: dotnet restore Schoology.WinUI/Schoology.WinUI.csproj -p:Platform=${{ matrix.architecture }}
-      - name: Build packaged app
-        run: dotnet build Schoology.WinUI/Schoology.WinUI.csproj --configuration Release --no-restore -p:Platform=${{ matrix.architecture }} -p:AppxPackageSigningEnabled=false
-      - name: Publish package outputs
+        run: dotnet restore Schoology.WinUI/Schoology.WinUI.csproj -r ${{ matrix.rid }} -p:Platform=${{ matrix.architecture }}
+
+      - name: Build WinUI app
+        run: dotnet build Schoology.WinUI/Schoology.WinUI.csproj --configuration Release --no-restore -r ${{ matrix.rid }} -p:Platform=${{ matrix.architecture }} -p:WindowsPackageType=None -p:WindowsAppSDKSelfContained=true
+
+      - name: Publish self-contained app
+        run: dotnet publish Schoology.WinUI/Schoology.WinUI.csproj --configuration Release --no-restore -r ${{ matrix.rid }} --self-contained true -p:Platform=${{ matrix.architecture }} -p:WindowsPackageType=None -p:WindowsAppSDKSelfContained=true -o publish/${{ matrix.rid }}
+
+      - name: Verify published executable
+        shell: pwsh
+        run: |
+          $exe = "publish/${{ matrix.rid }}/Schoology.WinUI.exe"
+          if (!(Test-Path $exe)) { throw "Expected executable was not produced: $exe" }
+          Write-Host "Verified executable: $exe"
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --yes --no-progress
+
+      - name: Build per-user installer for the Tauri install directory
+        shell: pwsh
+        run: |
+          $iscc = Get-ChildItem 'C:\Program Files (x86)\Inno Setup' -Filter 'ISCC.exe' -Recurse | Select-Object -First 1
+          if (!$iscc) { throw 'Inno Setup compiler was not found.' }
+          & $iscc.FullName /DArchitecture=${{ matrix.architecture }} /DSourceDir="publish\${{ matrix.rid }}" installer\Schoology-WinUI.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload installer and published files
         uses: actions/upload-artifact@v4
         with:
-          name: Schoology-WinUI-${{ matrix.architecture }}
+          name: Schoology-WinUI-${{ matrix.rid }}
           path: |
-            Schoology.WinUI/AppPackages/**/*.msix
-            Schoology.WinUI/AppPackages/**/*.msixbundle
-            Schoology.WinUI/bin/Release/**/*.msix
-            Schoology.WinUI/bin/Release/**/*.msixbundle
-          if-no-files-found: warn
+            installer-output/*.exe
+            publish/${{ matrix.rid }}/**
+          if-no-files-found: error
           retention-days: 14

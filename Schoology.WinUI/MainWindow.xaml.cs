@@ -45,7 +45,7 @@ public sealed partial class MainWindow : Window
     }
 
     private static SolidColorBrush Brush(string color) => new(Microsoft.UI.ColorHelper.FromArgb(
-        Convert.ToByte(color.Substring(1, 2), 16), Convert.ToByte(color.Substring(3, 2), 16), Convert.ToByte(color.Substring(5, 2), 16)));
+        255, Convert.ToByte(color.Substring(1, 2), 16), Convert.ToByte(color.Substring(3, 2), 16), Convert.ToByte(color.Substring(5, 2), 16)));
     private static TextBlock Text(string value, double size = 14, bool bold = false) => new()
     {
         Text = value, FontSize = size, FontWeight = bold ? Microsoft.UI.Text.FontWeights.SemiBold : Microsoft.UI.Text.FontWeights.Normal,
