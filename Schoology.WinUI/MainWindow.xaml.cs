@@ -16,6 +16,8 @@ public sealed partial class MainWindow : Window
     private readonly DispatcherTimer _splashTimer;
     private string _page = "login";
     private string _section = "Recent Activity";
+    private readonly SchoologyAuthService _auth = new(false);
+    private SchoologyAuthService.Session? _session;
     private readonly List<string> _courses = ["English Language Arts", "Algebra II", "Biology", "World History", "Computer Science"];
     private readonly List<string> _groups = ["Robotics Club", "Student Council", "Yearbook"];
 
@@ -47,6 +49,7 @@ public sealed partial class MainWindow : Window
                 _splashTimer.Stop();
                 ShowLogin();
                 App.WriteStartupLog("Login screen created.");
+                _ = RestoreSavedSessionAsync();
             }
             catch (Exception ex)
             {
@@ -149,39 +152,91 @@ public sealed partial class MainWindow : Window
         _page = "login";
         var outer = new Grid { Margin = new Thickness(0), Background = ThemeBrush("SchoologySubtleBrush") };
         outer.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        outer.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(440) });
-        var intro = new StackPanel { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(32, 0, 48, 0), Spacing = 16 };
-        intro.Children.Add(new TextBlock { Text = "schoology", FontSize = 46, FontWeight = Microsoft.UI.Text.FontWeights.Bold, Foreground = Brush("#2E66A3") });
+        outer.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(460) });
+        var intro = new StackPanel { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(40, 0, 48, 0), Spacing = 16 };
+        intro.Children.Add(new TextBlock { Text = "Schoology", FontSize = 46, FontWeight = Microsoft.UI.Text.FontWeights.Bold, Foreground = Brush("#2E66A3") });
         intro.Children.Add(Text("Your learning community,\nall in one place.", 30, true));
-        intro.Children.Add(Text("A native Windows experience for courses, groups, school updates, and upcoming work.", 17));
-        intro.Children.Add(Text("Sign in securely with your school or district account.", 14));
+        intro.Children.Add(Text("Sign in with your Schoology account or your school's district login.", 17));
+        intro.Children.Add(Text("Your password is used only for the sign-in request. The verified OAuth session is stored in Windows Credential Manager.", 13));
         Grid.SetColumn(intro, 0); outer.Children.Add(intro);
-        var form = new StackPanel { VerticalAlignment = VerticalAlignment.Center, Spacing = 12 };
-        form.Children.Add(Text("Welcome back", 25, true)); form.Children.Add(Text("Sign in to Schoology", 15));
-        var school = new TextBox { Header = "School or organization", PlaceholderText = "Search for your school", Margin = new Thickness(0, 8, 0, 0) };
-        var email = new TextBox { Header = "Email or username", PlaceholderText = "Enter your username" };
+
+        var form = new StackPanel { Spacing = 12 };
+        form.Children.Add(Text("Welcome back", 25, true));
+        form.Children.Add(Text("Sign in to Schoology", 15));
+        var school = new AutoSuggestBox { Header = "School or organization", PlaceholderText = "Search for your school", Margin = new Thickness(0, 8, 0, 0), UpdateTextOnSelect = false };
+        var username = new TextBox { Header = "Email or username", PlaceholderText = "Enter your username" };
         var password = new PasswordBox { Header = "Password", PlaceholderText = "Enter your password" };
-        form.Children.Add(school); form.Children.Add(email); form.Children.Add(password);
-        var status = Text("This starter connects to the official Schoology sign-in page; credentials are not stored by this app.", 12);
-        status.Opacity = 0.8; form.Children.Add(status);
-        form.Children.Add(Action("Continue to Schoology sign in", (_, _) => OpenOfficialLogin(), true));
-        form.Children.Add(Action("Preview app layout", (_, _) => ShowHome()));
-        form.Children.Add(Action("Use district sign-in", (_, _) => OpenOfficialLogin()));
+        var status = Text("Search for your school, then enter your credentials. District single sign-on is the next authentication phase.", 12);
+        string? selectedSchoolId = null;
+        status.Opacity = 0.86;
+        var signIn = new Button { Content = "Sign in", Padding = new Thickness(14, 9, 14, 9), HorizontalAlignment = HorizontalAlignment.Stretch, Background = Brush("#2E66A3"), Foreground = Brush("#FFFFFF") };
+        signIn.Click += async (_, _) =>
+        {
+            signIn.IsEnabled = false;
+            status.Text = "Signing in securely and verifying your Schoology profile…";
+            try
+            {
+                _session = await _auth.SignInAsync(username.Text, password.Password, selectedSchoolId);
+                password.Password = string.Empty;
+                status.Text = "Signed in successfully.";
+                ShowHome();
+            }
+            catch (Exception ex)
+            {
+                status.Text = ex.Message;
+                signIn.IsEnabled = true;
+            }
+        };
+        school.TextChanged += async (_, args) =>
+        {
+            if (args.Reason != AutoSuggestionBoxTextChangeReason.UserInput) return;
+            selectedSchoolId = null;
+            if (school.Text.Trim().Length < 2) return;
+            try
+            {
+                var results = await _auth.SearchSchoolsAsync(school.Text);
+                school.ItemsSource = results;
+                school.IsSuggestionListOpen = results.Count > 0;
+            }
+            catch { school.ItemsSource = Array.Empty<SchoologyAuthService.School>(); }
+        };
+        school.SuggestionChosen += (_, args) =>
+        {
+            if (args.SelectedItem is SchoologyAuthService.School chosen) { selectedSchoolId = chosen.Id; school.Text = chosen.Name; }
+        };
+        form.Children.Add(school);
+        form.Children.Add(username);
+        form.Children.Add(password);
+        form.Children.Add(signIn);
+        form.Children.Add(Action("District single sign-on", (_, _) => OpenDistrictSignInAsync()));
+        form.Children.Add(status);
         var card = Surface(form, new Thickness(28)); card.VerticalAlignment = VerticalAlignment.Center;
         Grid.SetColumn(card, 1); outer.Children.Add(card);
         Reset(outer);
     }
 
-    private async void OpenOfficialLogin()
+    private async Task RestoreSavedSessionAsync()
+    {
+        try
+        {
+            var restored = await _auth.RestoreSessionAsync();
+            if (restored is null || _page != "login") return;
+            _session = restored;
+            ShowHome();
+        }
+        catch (Exception ex) { App.WriteStartupLog("Saved Schoology session restoration failed.", ex); }
+    }
+
+    private async void OpenDistrictSignInAsync()
     {
         var dialog = new ContentDialog
         {
-            Title = "Continue to Schoology",
-            Content = "For account security, sign in through the official Schoology website. This initial native app shell does not yet import a web session. Open the sign-in page in your browser?",
-            PrimaryButtonText = "Open sign-in page", CloseButtonText = "Cancel", XamlRoot = _root.XamlRoot
+            Title = "District single sign-on",
+            Content = "District SSO requires a secure embedded authorization window and Schoology session-cookie exchange. That flow is not enabled in this phase; no district password is collected or saved.",
+            CloseButtonText = "OK",
+            XamlRoot = _root.XamlRoot
         };
-        if (await dialog.ShowAsync() == ContentDialogResult.Primary)
-            await Windows.System.Launcher.LaunchUriAsync(new Uri("https://app.schoology.com/login"));
+        await dialog.ShowAsync();
     }
 
     private void ShowHome(string section = "Recent Activity")
@@ -190,7 +245,14 @@ public sealed partial class MainWindow : Window
         var layout = new Grid { Background = ThemeBrush("SchoologySubtleBrush") };
         layout.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(248) });
         layout.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        var nav = new Grid { Background = Brush("#204D7B") };
+        var darkNav = _root.ActualTheme == ElementTheme.Dark;
+        var nav = new Grid { Background = new SolidColorBrush(Colors.Transparent) };
+        var navMaterial = new AcrylicBrush
+        {
+            TintColor = darkNav ? Microsoft.UI.ColorHelper.FromArgb(255, 18, 38, 56) : Microsoft.UI.ColorHelper.FromArgb(255, 32, 77, 123),
+            TintOpacity = darkNav ? 0.88 : 0.90,
+            FallbackColor = darkNav ? Microsoft.UI.ColorHelper.FromArgb(255, 24, 36, 46) : Microsoft.UI.ColorHelper.FromArgb(255, 32, 77, 123)
+        };
         nav.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); nav.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) }); nav.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         var brand = new StackPanel { Margin = new Thickness(22, 24, 16, 22), Spacing = 3 };
         brand.Children.Add(new TextBlock { Text = "schoology", FontSize = 27, FontWeight = Microsoft.UI.Text.FontWeights.Bold, Foreground = Brush("#FFFFFF") });
@@ -206,8 +268,10 @@ public sealed partial class MainWindow : Window
         var navScroll = new ScrollViewer { Content = navItems, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
         Grid.SetRow(navScroll, 1); nav.Children.Add(navScroll);
         var profile = new Button { Content = "◉   Profile and settings", HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Left, Padding = new Thickness(18, 18, 18, 18), Background = new SolidColorBrush(Colors.Transparent), Foreground = Brush("#FFFFFF"), BorderThickness = new Thickness(0) };
-        profile.Click += (_, _) => ShowLogin(); Grid.SetRow(profile, 2); nav.Children.Add(profile);
-        Grid.SetColumn(nav, 0); layout.Children.Add(nav);
+        profile.Content = _session is null ? "◉   Profile and settings" : "◉   Sign out";
+        profile.Click += (_, _) => { _auth.SignOut(); _session = null; ShowLogin(); }; Grid.SetRow(profile, 2); nav.Children.Add(profile);
+        var drawer = new Border { Background = navMaterial, CornerRadius = new CornerRadius(14), Margin = new Thickness(12), Child = nav, BorderBrush = ThemeBrush("SchoologyDividerBrush"), BorderThickness = new Thickness(1) };
+        Grid.SetColumn(drawer, 0); layout.Children.Add(drawer);
 
         var main = new Grid { Margin = new Thickness(26, 22, 26, 22) };
         main.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); main.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
