@@ -28,6 +28,7 @@ public sealed partial class MainWindow : Window
         _root = Root;
         Title = "Schoology";
         ExtendsContentIntoTitleBar = false;
+        try { SystemBackdrop = new MicaBackdrop(); } catch { }
 
         App.WriteStartupLog("Setting initial window size.");
         SetWindowSize(1260, 820);
@@ -90,7 +91,7 @@ public sealed partial class MainWindow : Window
         {
             ElementTheme.Dark => "Dark",
             ElementTheme.Light => "Light",
-            _ => "HighContrast"
+            _ => "Light"
         };
 
         try
@@ -113,7 +114,19 @@ public sealed partial class MainWindow : Window
 
     private Border Surface(UIElement child, Thickness? padding = null)
     {
-        return new Border { Background = ThemeBrush("SchoologySurfaceBrush"), BorderBrush = ThemeBrush("SchoologyDividerBrush"), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(8), Padding = padding ?? new Thickness(16), Child = child, Margin = new Thickness(0, 0, 0, 12) };
+        var fallback = ThemeBrush("SchoologySurfaceBrush");
+        Brush material = fallback;
+        if (_root.ActualTheme != ElementTheme.HighContrast)
+        {
+            material = new AcrylicBrush
+            {
+                BackgroundSource = AcrylicBackgroundSource.HostBackdrop,
+                TintColor = _root.ActualTheme == ElementTheme.Dark ? Microsoft.UI.ColorHelper.FromArgb(255, 30, 35, 40) : Microsoft.UI.ColorHelper.FromArgb(255, 248, 250, 252),
+                TintOpacity = _root.ActualTheme == ElementTheme.Dark ? 0.82 : 0.76,
+                FallbackColor = _root.ActualTheme == ElementTheme.Dark ? Microsoft.UI.ColorHelper.FromArgb(255, 32, 36, 40) : Microsoft.UI.ColorHelper.FromArgb(255, 255, 255, 255)
+            };
+        }
+        return new Border { Background = material, BorderBrush = ThemeBrush("SchoologyDividerBrush"), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(8), Padding = padding ?? new Thickness(16), Child = child, Margin = new Thickness(0, 0, 0, 12) };
     }
     private void Reset(UIElement content) { _root.Children.Clear(); _root.Children.Add(content); }
 
