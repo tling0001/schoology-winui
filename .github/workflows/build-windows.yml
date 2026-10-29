@@ -44,7 +44,7 @@ jobs:
         run: |
           msbuild Schoology.WinUI/Schoology.WinUI.csproj /restore /t:Publish /p:Configuration=Release /p:Platform=${{ matrix.architecture }} /p:RuntimeIdentifier=${{ matrix.rid }} /p:WindowsPackageType=None /p:WindowsAppSDKSelfContained=true /p:SelfContained=true /p:PublishDir="..\publish\${{ matrix.rid }}\"
 
-      - name: Verify published executable and bundled .NET runtime
+      - name: Verify published executable, runtime, and WinUI XAML resources
         shell: pwsh
         run: |
           $publishDir = "publish/${{ matrix.rid }}"
@@ -62,7 +62,11 @@ jobs:
           $runtimeConfig = Get-Content $runtimeConfigPath -Raw | ConvertFrom-Json
           $hasBundledFramework = $null -ne $runtimeConfig.runtimeOptions.includedFrameworks -and @($runtimeConfig.runtimeOptions.includedFrameworks | Where-Object { $_.name -eq "Microsoft.NETCore.App" -and $_.version -like "10.0.*" }).Count -gt 0
           if (!$hasBundledFramework) { throw "Published app does not declare its bundled .NET 10 framework." }
-          Write-Host "Verified self-contained .NET 10 runtime files and runtime configuration."
+
+          $priFiles = @(Get-ChildItem -Path $publishDir -Filter "*.pri" -File)
+          if ($priFiles.Count -eq 0) { throw "Published WinUI app is missing its PRI resource index; compiled XAML cannot be resolved." }
+          $priFiles | ForEach-Object { Write-Host "Verified WinUI resource index: $($_.Name)" }
+          Write-Host "Verified self-contained .NET 10 runtime and WinUI XAML resources."
 
       - name: Install Inno Setup
         shell: pwsh
