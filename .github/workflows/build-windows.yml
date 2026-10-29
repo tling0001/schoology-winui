@@ -1,0 +1,38 @@
+name: Build Schoology WinUI 3
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        architecture: [x64, ARM64]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Restore
+        run: dotnet restore Schoology.WinUI/Schoology.WinUI.csproj -p:Platform=${{ matrix.architecture }}
+      - name: Build packaged app
+        run: dotnet build Schoology.WinUI/Schoology.WinUI.csproj --configuration Release --no-restore -p:Platform=${{ matrix.architecture }} -p:AppxPackageSigningEnabled=false
+      - name: Publish package outputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: Schoology-WinUI-${{ matrix.architecture }}
+          path: |
+            Schoology.WinUI/AppPackages/**/*.msix
+            Schoology.WinUI/AppPackages/**/*.msixbundle
+            Schoology.WinUI/bin/Release/**/*.msix
+            Schoology.WinUI/bin/Release/**/*.msixbundle
+          if-no-files-found: warn
+          retention-days: 14

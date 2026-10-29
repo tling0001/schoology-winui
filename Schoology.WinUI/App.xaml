@@ -1,0 +1,32 @@
+<Application
+    x:Class="Schoology.WinUI.App"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <Application.Resources>
+    <ResourceDictionary>
+      <ResourceDictionary.ThemeDictionaries>
+        <ResourceDictionary x:Key="Light">
+          <SolidColorBrush x:Key="SchoologyBlueBrush" Color="#2E66A3" />
+          <SolidColorBrush x:Key="SchoologyBlueDarkBrush" Color="#204D7B" />
+          <SolidColorBrush x:Key="SchoologySurfaceBrush" Color="#FFFFFFFF" />
+          <SolidColorBrush x:Key="SchoologySubtleBrush" Color="#FFF2F5F7" />
+          <SolidColorBrush x:Key="SchoologyDividerBrush" Color="#FFD9E0E5" />
+        </ResourceDictionary>
+        <ResourceDictionary x:Key="Dark">
+          <SolidColorBrush x:Key="SchoologyBlueBrush" Color="#FF5B9BD5" />
+          <SolidColorBrush x:Key="SchoologyBlueDarkBrush" Color="#FF183A5B" />
+          <SolidColorBrush x:Key="SchoologySurfaceBrush" Color="#FF202428" />
+          <SolidColorBrush x:Key="SchoologySubtleBrush" Color="#FF292F34" />
+          <SolidColorBrush x:Key="SchoologyDividerBrush" Color="#FF41494F" />
+        </ResourceDictionary>
+        <ResourceDictionary x:Key="HighContrast">
+          <SolidColorBrush x:Key="SchoologyBlueBrush" Color="{ThemeResource SystemColorHighlightColor}" />
+          <SolidColorBrush x:Key="SchoologyBlueDarkBrush" Color="{ThemeResource SystemColorHighlightColor}" />
+          <SolidColorBrush x:Key="SchoologySurfaceBrush" Color="{ThemeResource SystemColorWindowColor}" />
+          <SolidColorBrush x:Key="SchoologySubtleBrush" Color="{ThemeResource SystemColorWindowColor}" />
+          <SolidColorBrush x:Key="SchoologyDividerBrush" Color="{ThemeResource SystemColorWindowTextColor}" />
+        </ResourceDictionary>
+      </ResourceDictionary.ThemeDictionaries>
+    </ResourceDictionary>
+  </Application.Resources>
+</Application>
