@@ -57,10 +57,39 @@ public sealed partial class MainWindow : Window
         if (primary) { b.Background = Brush("#2E66A3"); b.Foreground = Brush("#FFFFFF"); }
         b.Click += handler; return b;
     }
-    private static Border Surface(UIElement child, Thickness? padding = null)
+    private Brush ThemeBrush(string key)
     {
-        var border = new Border { Background = (Brush)Application.Current.Resources["SchoologySurfaceBrush"], BorderBrush = (Brush)Application.Current.Resources["SchoologyDividerBrush"], BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(8), Padding = padding ?? new Thickness(16), Child = child, Margin = new Thickness(0, 0, 0, 12) };
-        return border;
+        // These brushes live in ThemeDictionaries, so looking them up directly in
+        // Application.Resources throws at runtime. Resolve against the active
+        // Window theme and keep a safe fallback so startup cannot fail on a lookup.
+        var themeName = _root.ActualTheme switch
+        {
+            ElementTheme.Dark => "Dark",
+            ElementTheme.Light => "Light",
+            _ => "HighContrast"
+        };
+
+        try
+        {
+            if (Application.Current.Resources.ThemeDictionaries[themeName] is ResourceDictionary themeDictionary &&
+                themeDictionary[key] is Brush themedBrush)
+                return themedBrush;
+        }
+        catch { }
+
+        return key switch
+        {
+            "SchoologySurfaceBrush" => Brush("#FFFFFFFF"),
+            "SchoologySubtleBrush" => Brush("#FFF2F5F7"),
+            "SchoologyDividerBrush" => Brush("#FFD9E0E5"),
+            "SchoologyBlueDarkBrush" => Brush("#FF204D7B"),
+            _ => Brush("#FF2E66A3")
+        };
+    }
+
+    private Border Surface(UIElement child, Thickness? padding = null)
+    {
+        return new Border { Background = ThemeBrush("SchoologySurfaceBrush"), BorderBrush = ThemeBrush("SchoologyDividerBrush"), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(8), Padding = padding ?? new Thickness(16), Child = child, Margin = new Thickness(0, 0, 0, 12) };
     }
     private void Reset(UIElement content) { _root.Children.Clear(); _root.Children.Add(content); }
 
@@ -78,7 +107,7 @@ public sealed partial class MainWindow : Window
     private void ShowLogin()
     {
         _page = "login";
-        var outer = new Grid { Margin = new Thickness(0), Background = (Brush)Application.Current.Resources["SchoologySubtleBrush"] };
+        var outer = new Grid { Margin = new Thickness(0), Background = ThemeBrush("SchoologySubtleBrush") };
         outer.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         outer.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(440) });
         var intro = new StackPanel { VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(32, 0, 48, 0), Spacing = 16 };
@@ -210,7 +239,7 @@ public sealed partial class MainWindow : Window
     }
 
     private void ShowThreePane(string kind) { _page = kind; var shell = new Grid { Background = (Brush)Application.Current.Resources["SchoologySubtleBrush"] }; shell.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); shell.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-        var top = new Grid { Margin = new Thickness(20, 12, 20, 12), Background = (Brush)Application.Current.Resources["SchoologySurfaceBrush"] }; top.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) }); top.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto }); top.Children.Add(Text(kind, 23, true)); var back = Action("← Home", (_, _) => ShowHome()); Grid.SetColumn(back, 1); top.Children.Add(back); shell.Children.Add(top); Grid.SetRow(top, 0);
+        var top = new Grid { Margin = new Thickness(20, 12, 20, 12), Background = ThemeBrush("SchoologySurfaceBrush") }; top.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) }); top.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto }); top.Children.Add(Text(kind, 23, true)); var back = Action("← Home", (_, _) => ShowHome()); Grid.SetColumn(back, 1); top.Children.Add(back); shell.Children.Add(top); Grid.SetRow(top, 0);
         var panes = BuildThreePane(kind); Grid.SetRow(panes, 1); shell.Children.Add(panes); Reset(shell); }
     private Grid BuildThreePane(string kind)
     {
@@ -233,7 +262,7 @@ public sealed partial class MainWindow : Window
         Grid.SetColumn(leftCard, 0); grid.Children.Add(leftCard); Grid.SetColumn(middleCard, 1); grid.Children.Add(middleCard); Grid.SetColumn(rightCard, 2); grid.Children.Add(rightCard);
         return grid;
     }
-    private static void SetPaneTab(StackPanel body, string entry, string tab)
+    private void SetPaneTab(StackPanel body, string entry, string tab)
     {
         body.Children.Clear(); body.Children.Add(Text(entry, 23, true)); body.Children.Add(Text(tab, 17, true)); body.Children.Add(Surface(Text($"{tab} for {entry} will appear here when the official Schoology session and API layer are connected.")));
     }
