@@ -42,7 +42,7 @@ jobs:
       - name: Publish self-contained app
         shell: pwsh
         run: |
-          msbuild Schoology.WinUI/Schoology.WinUI.csproj /t:Publish /p:Configuration=Release /p:Platform=${{ matrix.architecture }} /p:RuntimeIdentifier=${{ matrix.rid }} /p:WindowsPackageType=None /p:WindowsAppSDKSelfContained=true /p:SelfContained=true /p:PublishDir="publish\${{ matrix.rid }}\"
+          msbuild Schoology.WinUI/Schoology.WinUI.csproj /t:Publish /p:Configuration=Release /p:Platform=${{ matrix.architecture }} /p:RuntimeIdentifier=${{ matrix.rid }} /p:WindowsPackageType=None /p:WindowsAppSDKSelfContained=true /p:SelfContained=true /p:PublishDir="..\publish\${{ matrix.rid }}\"
 
       - name: Verify published executable
         shell: pwsh
