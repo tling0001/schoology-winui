@@ -29,16 +29,20 @@ jobs:
       - name: Setup .NET 8
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: 8.0.x
+          dotnet-version: 8.0.427
 
-      - name: Restore
-        run: dotnet restore Schoology.WinUI/Schoology.WinUI.csproj -r ${{ matrix.rid }} -p:Platform=${{ matrix.architecture }}
+      - name: Setup Visual Studio MSBuild
+        uses: microsoft/setup-msbuild@v2
 
-      - name: Build WinUI app
-        run: dotnet build Schoology.WinUI/Schoology.WinUI.csproj --configuration Release --no-restore -r ${{ matrix.rid }} -p:Platform=${{ matrix.architecture }} -p:WindowsPackageType=None -p:WindowsAppSDKSelfContained=true
+      - name: Restore and build WinUI app
+        shell: pwsh
+        run: |
+          msbuild Schoology.WinUI/Schoology.WinUI.csproj /restore /t:Build /p:Configuration=Release /p:Platform=${{ matrix.architecture }} /p:RuntimeIdentifier=${{ matrix.rid }} /p:WindowsPackageType=None /p:WindowsAppSDKSelfContained=true
 
       - name: Publish self-contained app
-        run: dotnet publish Schoology.WinUI/Schoology.WinUI.csproj --configuration Release --no-restore -r ${{ matrix.rid }} --self-contained true -p:Platform=${{ matrix.architecture }} -p:WindowsPackageType=None -p:WindowsAppSDKSelfContained=true -o publish/${{ matrix.rid }}
+        shell: pwsh
+        run: |
+          msbuild Schoology.WinUI/Schoology.WinUI.csproj /t:Publish /p:Configuration=Release /p:Platform=${{ matrix.architecture }} /p:RuntimeIdentifier=${{ matrix.rid }} /p:WindowsPackageType=None /p:WindowsAppSDKSelfContained=true /p:SelfContained=true /p:PublishDir="publish\${{ matrix.rid }}\"
 
       - name: Verify published executable
         shell: pwsh
