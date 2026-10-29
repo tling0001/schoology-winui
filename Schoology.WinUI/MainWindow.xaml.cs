@@ -147,7 +147,7 @@ public sealed partial class MainWindow : Window
     private void ShowHome(string section = "Recent Activity")
     {
         _page = "home"; _section = section;
-        var layout = new Grid { Background = (Brush)Application.Current.Resources["SchoologySubtleBrush"] };
+        var layout = new Grid { Background = ThemeBrush("SchoologySubtleBrush") };
         layout.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(248) });
         layout.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         var nav = new Grid { Background = Brush("#204D7B") };
@@ -238,7 +238,7 @@ public sealed partial class MainWindow : Window
         grid.Children.Add(upcoming); Grid.SetColumn(calendar, 1); grid.Children.Add(calendar); return grid;
     }
 
-    private void ShowThreePane(string kind) { _page = kind; var shell = new Grid { Background = (Brush)Application.Current.Resources["SchoologySubtleBrush"] }; shell.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); shell.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+    private void ShowThreePane(string kind) { _page = kind; var shell = new Grid { Background = ThemeBrush("SchoologySubtleBrush") }; shell.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); shell.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         var top = new Grid { Margin = new Thickness(20, 12, 20, 12), Background = ThemeBrush("SchoologySurfaceBrush") }; top.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) }); top.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto }); top.Children.Add(Text(kind, 23, true)); var back = Action("← Home", (_, _) => ShowHome()); Grid.SetColumn(back, 1); top.Children.Add(back); shell.Children.Add(top); Grid.SetRow(top, 0);
         var panes = BuildThreePane(kind); Grid.SetRow(panes, 1); shell.Children.Add(panes); Reset(shell); }
     private Grid BuildThreePane(string kind)

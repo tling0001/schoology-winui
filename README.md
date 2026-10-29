@@ -4,7 +4,7 @@ A new native Windows app shell for Schoology, built with WinUI 3 and the Windows
 
 ## Current foundation
 
-- Native WinUI 3 unpackaged, self-contained application with GitHub Actions builds for x64 and ARM64.
+- Native WinUI 3 unpackaged, framework-dependent .NET 10 application with GitHub Actions builds for x64 and ARM64. The .NET runtime is not bundled.
 - Brief Schoology-blue splash screen, then a login entry screen.
 - Login handoff to the official Schoology sign-in website; this first phase deliberately does not collect/store passwords or pretend that a browser session is already integrated.
 - Home navigation drawer and dashboard layout for recent activity and courses.
@@ -18,7 +18,7 @@ This is the UI foundation only. Dashboard data is illustrative until the officia
 
 ## Build
 
-GitHub Actions restores, builds, publishes a self-contained WinUI app, verifies the executable exists, and creates a per-user installer for x64 and ARM64. The installer targets `%LOCALAPPDATA%\\Programs\\Schoology`, matching the current-user install directory used by the Tauri Schoology app. It installs `Schoology.WinUI.exe` alongside the existing `Schoology.exe` and gives the native app a separate Start menu shortcut; it does not replace the Tauri executable. The installer tracks the files it adds so uninstalling the WinUI app does not intentionally remove Tauri-owned files. No local Windows build or installer test was run.
+GitHub Actions restores, builds, publishes a framework-dependent .NET 10 WinUI app, verifies the runtime configuration and that the .NET runtime is not bundled, and creates a per-user installer for x64 and ARM64. The installer targets `%LOCALAPPDATA%\\Programs\\Schoology`, matching the current-user install directory used by the Tauri Schoology app. It installs `Schoology.WinUI.exe` alongside the existing `Schoology.exe` and gives the native app a separate Start menu shortcut; it does not replace the Tauri executable. The installer tracks the files it adds so uninstalling the WinUI app does not intentionally remove Tauri-owned files. The .NET 10 Runtime must be installed separately if it is not already present; the installer offers the official Microsoft download page. No local Windows build or installer test was run.
 
 ## Reference sources
 

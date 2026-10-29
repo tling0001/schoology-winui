@@ -26,10 +26,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup .NET 8
+      - name: Setup .NET 10
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: 8.0.427
+          dotnet-version: 10.0.x
 
       - name: Setup Visual Studio MSBuild
         uses: microsoft/setup-msbuild@v2
@@ -39,10 +39,10 @@ jobs:
         run: |
           msbuild Schoology.WinUI/Schoology.WinUI.csproj /restore /t:Build /p:Configuration=Release /p:Platform=${{ matrix.architecture }} /p:RuntimeIdentifier=${{ matrix.rid }} /p:WindowsPackageType=None /p:WindowsAppSDKSelfContained=true
 
-      - name: Publish self-contained app
+      - name: Publish framework-dependent app
         shell: pwsh
         run: |
-          msbuild Schoology.WinUI/Schoology.WinUI.csproj /t:Publish /p:Configuration=Release /p:Platform=${{ matrix.architecture }} /p:RuntimeIdentifier=${{ matrix.rid }} /p:WindowsPackageType=None /p:WindowsAppSDKSelfContained=true /p:SelfContained=true /p:PublishDir="..\publish\${{ matrix.rid }}\"
+          msbuild Schoology.WinUI/Schoology.WinUI.csproj /t:Publish /p:Configuration=Release /p:Platform=${{ matrix.architecture }} /p:RuntimeIdentifier=${{ matrix.rid }} /p:WindowsPackageType=None /p:WindowsAppSDKSelfContained=true /p:SelfContained=false /p:PublishDir="..\publish\${{ matrix.rid }}\"
 
       - name: Verify published executable
         shell: pwsh
@@ -50,6 +50,12 @@ jobs:
           $exe = "publish/${{ matrix.rid }}/Schoology.WinUI.exe"
           if (!(Test-Path $exe)) { throw "Expected executable was not produced: $exe" }
           Write-Host "Verified executable: $exe"
+          $runtimeConfigPath = "publish/${{ matrix.rid }}/Schoology.WinUI.runtimeconfig.json"
+          if (!(Test-Path $runtimeConfigPath)) { throw "Missing runtime configuration: $runtimeConfigPath" }
+          $runtimeConfig = Get-Content $runtimeConfigPath -Raw | ConvertFrom-Json
+          if ($runtimeConfig.runtimeOptions.framework.name -ne "Microsoft.NETCore.App" -or $runtimeConfig.runtimeOptions.framework.version -notlike "10.0.*") { throw "Published app is not configured for .NET 10." }
+          if (Test-Path "publish/${{ matrix.rid }}/hostfxr.dll") { throw "Unexpected bundled .NET host/runtime; expected framework-dependent output." }
+          Write-Host "Verified framework-dependent .NET 10 configuration."
 
       - name: Install Inno Setup
         shell: pwsh

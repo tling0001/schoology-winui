@@ -6,7 +6,7 @@
 #endif
 
 #define AppName "Schoology WinUI"
-#define AppVersion "2026.10.0-port.28"
+#define AppVersion "2026.10.0-port.28-net10"
 #define AppExeName "Schoology.WinUI.exe"
 
 [Setup]
@@ -28,6 +28,39 @@ CloseApplications=yes
 RestartApplications=no
 Uninstallable=yes
 UninstallDisplayName=Schoology WinUI
+
+[Code]
+function IsDotNet10Installed(): Boolean;
+var
+  FindRec: TFindRec;
+  RuntimePath: String;
+begin
+  Result := False;
+  RuntimePath := ExpandConstant('{autopf}\dotnet\shared\Microsoft.NETCore.App\10.*');
+  if FindFirst(RuntimePath, FindRec) then begin
+    try
+      repeat
+        if (FindRec.Attributes and FILE_ATTRIBUTE_DIRECTORY) <> 0 then begin
+          Result := True;
+          Break;
+        end;
+      until not FindNext(FindRec);
+    finally
+      FindClose(FindRec);
+    end;
+  end;
+end;
+
+function InitializeSetup(): Boolean;
+var
+  ResultCode: Integer;
+begin
+  Result := True;
+  if not IsDotNet10Installed() then begin
+    if MsgBox('Schoology WinUI requires the .NET 10 runtime, which is not bundled to keep the download small. Install .NET 10 Runtime from Microsoft before launching the app. Open the official download page now?', mbConfirmation, MB_YESNO) = IDYES then
+      ShellExec('open', 'https://dotnet.microsoft.com/en-us/download/dotnet/10.0', '', '', SW_SHOWNORMAL, ewNoWait, ResultCode);
+  end;
+end;
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
