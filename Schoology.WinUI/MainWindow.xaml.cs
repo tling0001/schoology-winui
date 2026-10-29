@@ -114,18 +114,21 @@ public sealed partial class MainWindow : Window
 
     private Border Surface(UIElement child, Thickness? padding = null)
     {
-        var fallback = ThemeBrush("SchoologySurfaceBrush");
-        Brush material = fallback;
-        if (_root.ActualTheme != ElementTheme.HighContrast)
+        // WinUI 3 AcrylicBrush is an in-app material. Unlike UWP's brush,
+        // it has no BackgroundSource/AcrylicBackgroundSource API.
+        // MicaBackdrop is applied to the Window; this brush provides a
+        // theme-tinted translucent surface with a safe opaque fallback.
+        var dark = _root.ActualTheme == ElementTheme.Dark;
+        Brush material = new AcrylicBrush
         {
-            material = new AcrylicBrush
-            {
-                BackgroundSource = AcrylicBackgroundSource.HostBackdrop,
-                TintColor = _root.ActualTheme == ElementTheme.Dark ? Microsoft.UI.ColorHelper.FromArgb(255, 30, 35, 40) : Microsoft.UI.ColorHelper.FromArgb(255, 248, 250, 252),
-                TintOpacity = _root.ActualTheme == ElementTheme.Dark ? 0.82 : 0.76,
-                FallbackColor = _root.ActualTheme == ElementTheme.Dark ? Microsoft.UI.ColorHelper.FromArgb(255, 32, 36, 40) : Microsoft.UI.ColorHelper.FromArgb(255, 255, 255, 255)
-            };
-        }
+            TintColor = dark
+                ? Microsoft.UI.ColorHelper.FromArgb(255, 30, 35, 40)
+                : Microsoft.UI.ColorHelper.FromArgb(255, 248, 250, 252),
+            TintOpacity = dark ? 0.82 : 0.76,
+            FallbackColor = dark
+                ? Microsoft.UI.ColorHelper.FromArgb(255, 32, 36, 40)
+                : Microsoft.UI.ColorHelper.FromArgb(255, 255, 255, 255)
+        };
         return new Border { Background = material, BorderBrush = ThemeBrush("SchoologyDividerBrush"), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(8), Padding = padding ?? new Thickness(16), Child = child, Margin = new Thickness(0, 0, 0, 12) };
     }
     private void Reset(UIElement content) { _root.Children.Clear(); _root.Children.Add(content); }
