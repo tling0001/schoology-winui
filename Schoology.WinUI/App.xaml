@@ -4,10 +4,15 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
   <Application.Resources>
     <ResourceDictionary>
+      <ResourceDictionary.MergedDictionaries>
+        <!-- WinUI 3's default templates, styles, and control resources must be
+             loaded explicitly by unpackaged apps before controls are created. -->
+        <XamlControlsResources xmlns="using:Microsoft.UI.Xaml.Controls" />
+      </ResourceDictionary.MergedDictionaries>
       <ResourceDictionary.ThemeDictionaries>
         <ResourceDictionary x:Key="Light">
-          <SolidColorBrush x:Key="SchoologyBlueBrush" Color="#2E66A3" />
-          <SolidColorBrush x:Key="SchoologyBlueDarkBrush" Color="#204D7B" />
+          <SolidColorBrush x:Key="SchoologyBlueBrush" Color="#FF2E66A3" />
+          <SolidColorBrush x:Key="SchoologyBlueDarkBrush" Color="#FF204D7B" />
           <SolidColorBrush x:Key="SchoologySurfaceBrush" Color="#FFFFFFFF" />
           <SolidColorBrush x:Key="SchoologySubtleBrush" Color="#FFF2F5F7" />
           <SolidColorBrush x:Key="SchoologyDividerBrush" Color="#FFD9E0E5" />
