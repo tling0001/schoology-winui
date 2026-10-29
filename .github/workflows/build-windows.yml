@@ -37,25 +37,32 @@ jobs:
       - name: Restore and build WinUI app
         shell: pwsh
         run: |
-          msbuild Schoology.WinUI/Schoology.WinUI.csproj /restore /t:Build /p:Configuration=Release /p:Platform=${{ matrix.architecture }} /p:RuntimeIdentifier=${{ matrix.rid }} /p:WindowsPackageType=None /p:WindowsAppSDKSelfContained=true
+          msbuild Schoology.WinUI/Schoology.WinUI.csproj /restore /t:Build /p:Configuration=Release /p:Platform=${{ matrix.architecture }} /p:RuntimeIdentifier=${{ matrix.rid }} /p:WindowsPackageType=None /p:WindowsAppSDKSelfContained=true /p:SelfContained=true
 
-      - name: Publish framework-dependent app
+      - name: Publish self-contained app
         shell: pwsh
         run: |
-          msbuild Schoology.WinUI/Schoology.WinUI.csproj /t:Publish /p:Configuration=Release /p:Platform=${{ matrix.architecture }} /p:RuntimeIdentifier=${{ matrix.rid }} /p:WindowsPackageType=None /p:WindowsAppSDKSelfContained=true /p:SelfContained=false /p:PublishDir="..\publish\${{ matrix.rid }}\"
+          msbuild Schoology.WinUI/Schoology.WinUI.csproj /restore /t:Publish /p:Configuration=Release /p:Platform=${{ matrix.architecture }} /p:RuntimeIdentifier=${{ matrix.rid }} /p:WindowsPackageType=None /p:WindowsAppSDKSelfContained=true /p:SelfContained=true /p:PublishDir="..\publish\${{ matrix.rid }}\"
 
-      - name: Verify published executable
+      - name: Verify published executable and bundled .NET runtime
         shell: pwsh
         run: |
-          $exe = "publish/${{ matrix.rid }}/Schoology.WinUI.exe"
+          $publishDir = "publish/${{ matrix.rid }}"
+          $exe = Join-Path $publishDir "Schoology.WinUI.exe"
           if (!(Test-Path $exe)) { throw "Expected executable was not produced: $exe" }
           Write-Host "Verified executable: $exe"
-          $runtimeConfigPath = "publish/${{ matrix.rid }}/Schoology.WinUI.runtimeconfig.json"
+
+          foreach ($requiredFile in @("hostfxr.dll", "hostpolicy.dll", "coreclr.dll")) {
+            $runtimeFile = Join-Path $publishDir $requiredFile
+            if (!(Test-Path $runtimeFile)) { throw "Self-contained .NET runtime file is missing: $runtimeFile" }
+          }
+
+          $runtimeConfigPath = Join-Path $publishDir "Schoology.WinUI.runtimeconfig.json"
           if (!(Test-Path $runtimeConfigPath)) { throw "Missing runtime configuration: $runtimeConfigPath" }
           $runtimeConfig = Get-Content $runtimeConfigPath -Raw | ConvertFrom-Json
-          if ($runtimeConfig.runtimeOptions.framework.name -ne "Microsoft.NETCore.App" -or $runtimeConfig.runtimeOptions.framework.version -notlike "10.0.*") { throw "Published app is not configured for .NET 10." }
-          if (Test-Path "publish/${{ matrix.rid }}/hostfxr.dll") { throw "Unexpected bundled .NET host/runtime; expected framework-dependent output." }
-          Write-Host "Verified framework-dependent .NET 10 configuration."
+          $hasBundledFramework = $null -ne $runtimeConfig.runtimeOptions.includedFrameworks -and @($runtimeConfig.runtimeOptions.includedFrameworks | Where-Object { $_.name -eq "Microsoft.NETCore.App" -and $_.version -like "10.0.*" }).Count -gt 0
+          if (!$hasBundledFramework) { throw "Published app does not declare its bundled .NET 10 framework." }
+          Write-Host "Verified self-contained .NET 10 runtime files and runtime configuration."
 
       - name: Install Inno Setup
         shell: pwsh
