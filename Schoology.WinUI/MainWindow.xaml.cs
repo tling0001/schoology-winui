@@ -7,6 +7,7 @@ using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Navigation;
 using Microsoft.UI.Xaml.Media.Animation;
 using System.Web;
+using System.Text;
 using Windows.Media.Playback;
 using System.Runtime.InteropServices;
 using Windows.Graphics;
