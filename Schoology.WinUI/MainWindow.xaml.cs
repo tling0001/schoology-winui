@@ -934,9 +934,10 @@ public sealed partial class MainWindow : Window
         titleBar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         titleBar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         titleBar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        var brand = Text("schoology", 17, true);
-        brand.Foreground = ThemeBrush("SchoologyBlueBrush");
+        var brand = new Image { Width = 112, Height = 30, Stretch = Microsoft.UI.Xaml.Media.Stretch.Uniform,
+            VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Left };
         titleBar.Children.Add(brand);
+        _ = SetEmbeddedImageAsync(brand, "Schoology.WinUI.Assets.logo_schoology.png");
         var caption = Text(section == "Recent Activity" ? "Home" : section, 13, true);
         caption.Foreground = ThemeBrush("SchoologyMutedTextBrush");
         caption.HorizontalAlignment = HorizontalAlignment.Center;
@@ -1154,9 +1155,6 @@ public sealed partial class MainWindow : Window
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         header.Children.Add(Text("Home", 23, true));
-        var hide = Action("Hide pane", (_, _) => split.IsPaneOpen = !split.IsPaneOpen);
-        hide.Padding = new Thickness(8, 4, 8, 4);
-        Grid.SetColumn(hide, 1); header.Children.Add(hide);
         left.Children.Add(header);
 
         var selector = new SelectorBar { HorizontalAlignment = HorizontalAlignment.Left };
@@ -1189,8 +1187,7 @@ public sealed partial class MainWindow : Window
         {
             var narrow = args.NewSize.Width < 900;
             split.DisplayMode = narrow ? SplitViewDisplayMode.Overlay : SplitViewDisplayMode.Inline;
-            if (narrow && split.IsPaneOpen) split.IsPaneOpen = false;
-            else if (!narrow && !split.IsPaneOpen) split.IsPaneOpen = true;
+            split.IsPaneOpen = true;
         };
         _homeSplitView = split;
         return split;
@@ -1349,102 +1346,133 @@ public sealed partial class MainWindow : Window
 
     private UIElement BuildThreePane(string kind, SchoologyEntity? initialEntity = null)
     {
-        var split = new SplitView
-        {
-            DisplayMode = SplitViewDisplayMode.Inline,
-            IsPaneOpen = true,
-            OpenPaneLength = 276,
-            CompactPaneLength = 0,
-            PanePlacement = SplitViewPanePlacement.Left,
-            Background = new SolidColorBrush(Colors.Transparent)
-        };
         IEnumerable<SchoologyEntity> entries = kind == "Courses" ? _courses :
             kind == "Groups" ? _groups : GetSchoolProfileEntities();
-        var master = new StackPanel { Spacing = 8, Margin = new Thickness(16) };
-        master.Children.Add(Text(kind == "School Profile" ? "School" : $"My {kind}", 20, true));
-        var entitySearch = new TextBox { PlaceholderText = $"Search {kind.ToLowerInvariant()}", Margin = new Thickness(0, 4, 0, 8) };
-        master.Children.Add(entitySearch);
-        var selectedName = Text(initialEntity?.Name ?? "Select an item", 14, true);
-        var selector = new SelectorBar { Margin = new Thickness(0, 0, 0, 12) };
-        var tabs = kind == "School Profile" ? new[] { "Updates", "Info", "Upcoming", "Resources", "Discussions" } :
-            kind == "Groups" ? new[] { "Updates", "Members", "Upcoming", "Discussions", "Resources" } :
-            new[] { "Updates", "Materials", "Grades", "Members", "Discussions" };
-        foreach (var tab in tabs) selector.Items.Add(new SelectorBarItem { Text = tab });
-        var detail = new Frame
+        var selected = initialEntity ?? entries.FirstOrDefault();
+        var entityId = selected?.Id ?? 0;
+        var entityName = selected?.Name ?? (kind == "School Profile" ? "School" : kind);
+        _selectedEntity = entityName;
+        _selectedEntityId = entityId;
+        var tabs = kind == "School Profile" ? new[] { "Updates", "Info", "Resources", "Discussions" } :
+            kind == "Groups" ? new[] { "Updates", "Members", "Discussions", "Resources" } :
+            new[] { "Materials", "Updates", "Grades", "Members", "Discussions" };
+
+        var root = new Grid { Background = new SolidColorBrush(Colors.Transparent) };
+        var wide = new Grid { ColumnSpacing = 0 };
+        wide.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(250) });
+        wide.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        wide.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(300) });
+
+        // The left structural pane holds the course/group/school infobox and its app navigation.
+        var sidebar = new Grid { Background = ThemeBrush("SchoologySurfaceBrush") };
+        sidebar.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        sidebar.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        var identity = new StackPanel { Spacing = 8, Margin = new Thickness(14) };
+        var hero = new Border { Height = 124, CornerRadius = new CornerRadius(8),
+            Background = ThemeBrush("SchoologyBlueDarkBrush") };
+        if (!string.IsNullOrWhiteSpace(selected?.ImageUrl))
         {
-            Background = new SolidColorBrush(Colors.Transparent),
-            ContentTransitions = new TransitionCollection
-            {
-                new NavigationThemeTransition
-                {
-                    DefaultNavigationTransitionInfo = new SlideNavigationTransitionInfo { Effect = SlideNavigationTransitionEffect.FromRight }
-                }
-            }
-        };
-        selector.SelectionChanged += (_, _) =>
-        {
-            if (selector.SelectedItem is SelectorBarItem selected && _selectedEntityId > 0)
-                NavigateShellFrame(detail, BuildEntityTabContent(kind, _selectedEntityId, _selectedEntity, selected.Text), SlideNavigationTransitionEffect.FromRight);
-        };
-        var center = new StackPanel { Spacing = 8, Margin = new Thickness(16) };
-        center.Children.Add(selectedName);
-        center.Children.Add(selector);
-        var entityList = new ListView
-        {
-            SelectionMode = ListViewSelectionMode.Single,
-            IsItemClickEnabled = true,
-            ItemsSource = new ObservableCollection<SchoologyEntity>(entries),
-            DisplayMemberPath = nameof(SchoologyEntity.Name),
-            HorizontalContentAlignment = HorizontalAlignment.Stretch
-        };
-        AutomationProperties.SetAutomationId(entityList, kind + "EntityList");
-        _entityListView = entityList;
-        var filteredEntities = (ObservableCollection<SchoologyEntity>)entityList.ItemsSource;
-        entitySearch.TextChanged += (_, _) =>
-        {
-            var query = entitySearch.Text.Trim();
-            filteredEntities.Clear();
-            foreach (var candidate in entries.Where(candidate => query.Length == 0 ||
-                candidate.Name.Contains(query, StringComparison.CurrentCultureIgnoreCase) ||
-                candidate.Subtitle.Contains(query, StringComparison.CurrentCultureIgnoreCase)))
-                filteredEntities.Add(candidate);
-        };
-        if (initialEntity is not null)
-        {
-            entityList.SelectedItem = initialEntity;
-            selector.SelectedItem = selector.Items.FirstOrDefault();
-            if (selector.SelectedItem is SelectorBarItem initialTab)
-                NavigateShellFrame(detail, BuildEntityTabContent(kind, initialEntity.Id, initialEntity.Name, initialTab.Text), SlideNavigationTransitionEffect.FromRight);
+            try { hero.Child = new Image { Source = new BitmapImage(new Uri(NormalizeSchoologyImageUrl(selected.ImageUrl))),
+                Stretch = Microsoft.UI.Xaml.Media.Stretch.UniformToFill }; } catch { }
         }
-        entityList.ItemClick += (_, args) =>
+        identity.Children.Add(hero);
+        identity.Children.Add(Text(entityName, 17, true));
+        if (!string.IsNullOrWhiteSpace(selected?.Subtitle)) identity.Children.Add(Text(selected.Subtitle, 12));
+        if (kind == "Courses" && selected is not null)
         {
-            if (args.ClickedItem is not SchoologyEntity entity) return;
-            _selectedEntity = entity.Name;
-            _selectedEntityId = entity.Id;
-            selectedName.Text = entity.Name;
-            selector.SelectedItem = null;
-            selector.SelectedItem = selector.Items.FirstOrDefault();
-        };
-        master.Children.Add(entityList);
-        split.Pane = new ScrollViewer { Content = master, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
-        var centerPane = Surface(center, new Thickness(14));
-        var rightPane = Surface(detail, new Thickness(14));
-        var columns = new Grid { ColumnSpacing = 0 };
-        columns.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(330) });
-        columns.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        Grid.SetColumn(centerPane, 0);
-        Grid.SetColumn(rightPane, 1);
-        columns.Children.Add(centerPane);
-        columns.Children.Add(rightPane);
-        split.Content = columns;
-        split.SizeChanged += (_, args) =>
+            var schoolName = ProfileValue(selected.Data, "school_title", "school_name", "school");
+            if (!string.IsNullOrWhiteSpace(schoolName))
+            {
+                var school = Text(schoolName, 12);
+                school.Foreground = ThemeBrush("SchoologyBlueBrush");
+                identity.Children.Add(school);
+            }
+        }
+        sidebar.Children.Add(identity);
+
+        var detail = new Frame { Background = new SolidColorBrush(Colors.Transparent) };
+        var navigation = new ListView { SelectionMode = ListViewSelectionMode.Single,
+            IsItemClickEnabled = true, HorizontalContentAlignment = HorizontalAlignment.Stretch,
+            Background = new SolidColorBrush(Colors.Transparent) };
+        AutomationProperties.SetAutomationId(navigation, kind + "ProfileNavigation");
+        foreach (var tab in tabs)
+            navigation.Items.Add(new ListViewItem { Content = tab, Tag = tab,
+                Padding = new Thickness(14, 10, 14, 10) });
+        Grid.SetRow(navigation, 1);
+        sidebar.Children.Add(navigation);
+
+        var upcoming = new Grid { RowSpacing = 8, Padding = new Thickness(14),
+            Background = ThemeBrush("SchoologySurfaceBrush") };
+        upcoming.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        upcoming.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        upcoming.Children.Add(Text("Upcoming", 19, true));
+        var upcomingFrame = new Frame { Background = new SolidColorBrush(Colors.Transparent) };
+        Grid.SetRow(upcomingFrame, 1);
+        upcoming.Children.Add(upcomingFrame);
+        Grid.SetColumn(sidebar, 0); Grid.SetColumn(detail, 1); Grid.SetColumn(upcoming, 2);
+        wide.Children.Add(sidebar); wide.Children.Add(detail); wide.Children.Add(upcoming);
+
+        // In narrow/portrait windows, the infobox remains visible and destinations become SelectorBar tabs.
+        var narrow = new Grid { RowSpacing = 8, Padding = new Thickness(12), Visibility = Visibility.Collapsed };
+        narrow.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        narrow.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        narrow.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        var compactIdentity = new Grid { ColumnSpacing = 12, Margin = new Thickness(0, 0, 0, 4) };
+        compactIdentity.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(72) });
+        compactIdentity.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        var compactImage = new Border { Width = 68, Height = 68, CornerRadius = new CornerRadius(6),
+            Background = ThemeBrush("SchoologyBlueDarkBrush") };
+        if (!string.IsNullOrWhiteSpace(selected?.ImageUrl))
         {
-            var narrow = args.NewSize.Width < 820;
-            split.DisplayMode = narrow ? SplitViewDisplayMode.Overlay : SplitViewDisplayMode.Inline;
-            if (narrow && split.IsPaneOpen) split.IsPaneOpen = false;
-            else if (!narrow && !split.IsPaneOpen) split.IsPaneOpen = true;
+            try { compactImage.Child = new Image { Source = new BitmapImage(new Uri(NormalizeSchoologyImageUrl(selected.ImageUrl))),
+                Stretch = Microsoft.UI.Xaml.Media.Stretch.UniformToFill }; } catch { }
+        }
+        compactIdentity.Children.Add(compactImage);
+        var compactLabels = new StackPanel { Spacing = 4, VerticalAlignment = VerticalAlignment.Center };
+        compactLabels.Children.Add(Text(entityName, 18, true));
+        compactLabels.Children.Add(Text(kind == "Courses" ? "Course" :
+            kind == "Groups" ? "Group" : "School profile", 12));
+        Grid.SetColumn(compactLabels, 1); compactIdentity.Children.Add(compactLabels);
+        Grid.SetRow(compactIdentity, 0); narrow.Children.Add(compactIdentity);
+        var compactSelector = new SelectorBar { HorizontalAlignment = HorizontalAlignment.Stretch };
+        foreach (var tab in tabs.Concat(["Upcoming"]))
+            compactSelector.Items.Add(new SelectorBarItem { Text = tab });
+        Grid.SetRow(compactSelector, 1); narrow.Children.Add(compactSelector);
+        var compactFrame = new Frame { Background = new SolidColorBrush(Colors.Transparent) };
+        Grid.SetRow(compactFrame, 2); narrow.Children.Add(compactFrame);
+
+        void ShowTab(string tab)
+        {
+            if (entityId <= 0) return;
+            NavigateShellFrame(detail, tab == "Upcoming" ? BuildUpcomingContent() :
+                BuildEntityTabContent(kind, entityId, entityName, tab), SlideNavigationTransitionEffect.FromRight);
+            NavigateShellFrame(compactFrame, tab == "Upcoming" ? BuildUpcomingContent() :
+                BuildEntityTabContent(kind, entityId, entityName, tab), SlideNavigationTransitionEffect.FromRight);
+        }
+        navigation.ItemClick += (_, args) =>
+        {
+            if (args.ClickedItem is ListViewItem { Tag: string tab }) ShowTab(tab);
         };
-        return split;
+        compactSelector.SelectionChanged += (_, _) =>
+        {
+            if (compactSelector.SelectedItem is SelectorBarItem item) ShowTab(item.Text);
+        };
+        NavigateShellFrame(upcomingFrame, BuildUpcomingContent(), SlideNavigationTransitionEffect.FromRight);
+        if (entityId > 0)
+        {
+            navigation.SelectedIndex = 0;
+            ShowTab(tabs[0]);
+            compactSelector.SelectedItem = compactSelector.Items.FirstOrDefault();
+        }
+        root.Children.Add(wide);
+        root.Children.Add(narrow);
+        root.SizeChanged += (_, args) =>
+        {
+            var useNarrow = args.NewSize.Width < 900;
+            wide.Visibility = useNarrow ? Visibility.Collapsed : Visibility.Visible;
+            narrow.Visibility = useNarrow ? Visibility.Visible : Visibility.Collapsed;
+        };
+        return root;
     }
 
     private void NavigateShellFrame(Frame frame, UIElement content, SlideNavigationTransitionEffect effect)
@@ -1506,7 +1534,7 @@ public sealed partial class MainWindow : Window
                 foreach (var record in records) body.Children.Add(BuildUpdateCard(kind, entityId, record));
                 return;
             }
-            var list = new ListView { SelectionMode = ListViewSelectionMode.None, HorizontalContentAlignment = HorizontalAlignment.Stretch };
+            var list = new ListView { SelectionMode = ListViewSelectionMode.None, HorizontalContentAlignment = HorizontalAlignment.Stretch, MaxHeight = 680 };
             AutomationProperties.SetAutomationId(list, $"{kind}{tab}List");
             foreach (var record in records)
             {
@@ -1539,7 +1567,7 @@ public sealed partial class MainWindow : Window
         IReadOnlyList<SchoologyApiRecord> current = initialRecords;
         // Create the list before the Back handler captures Render/list.
         var list = new ListView { SelectionMode = ListViewSelectionMode.Single, IsItemClickEnabled = true,
-            HorizontalContentAlignment = HorizontalAlignment.Stretch };
+            HorizontalContentAlignment = HorizontalAlignment.Stretch, MaxHeight = 680 };
         AutomationProperties.SetAutomationId(list, "CourseMaterialsList");
         Button back = null!;
         back = Action("‹ Back to course materials", (_, _) =>
@@ -1624,7 +1652,7 @@ public sealed partial class MainWindow : Window
         var admins = new SelectorBarItem { Text = "Admins" };
         filters.Items.Add(all); filters.Items.Add(members); filters.Items.Add(admins); filters.SelectedItem = all;
         var search = new TextBox { PlaceholderText = $"Search {kind.ToLowerInvariant()} members" };
-        var list = new ListView { SelectionMode = ListViewSelectionMode.None, HorizontalContentAlignment = HorizontalAlignment.Stretch };
+        var list = new ListView { SelectionMode = ListViewSelectionMode.None, HorizontalContentAlignment = HorizontalAlignment.Stretch, MaxHeight = 680 };
         AutomationProperties.SetAutomationId(list, kind + "MembersList");
         void Render()
         {
