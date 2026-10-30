@@ -303,9 +303,50 @@ public sealed partial class MainWindow : Window
         };
         Grid.SetRow(surface, 1);
         grid.Children.Add(surface);
-        grid.SizeChanged += (_, args) => content.Width = Math.Min(620, Math.Max(180, args.NewSize.Width - 96));
+        // Copy the out parameter to a local before capturing it in the event handler.
+        // C# does not allow ref/out parameters to be captured by lambdas.
+        var responsiveContent = content;
+        grid.SizeChanged += (_, args) => responsiveContent.Width = Math.Min(620, Math.Max(180, args.NewSize.Width - 96));
         Reset(grid);
         return grid;
+    }
+
+    private static async Task SetEmbeddedImageAsync(Image image, string resourceName)
+    {
+        var assembly = typeof(MainWindow).Assembly;
+        var resolvedName = assembly.GetManifestResourceNames()
+            .FirstOrDefault(name => name.Equals(resourceName, StringComparison.Ordinal) ||
+                                    name.EndsWith(resourceName, StringComparison.Ordinal));
+
+        if (resolvedName is null)
+        {
+            App.WriteStartupLog($"Embedded image resource was not found: {resourceName}");
+            return;
+        }
+
+        await using var source = assembly.GetManifestResourceStream(resolvedName);
+        if (source is null)
+        {
+            App.WriteStartupLog($"Embedded image resource could not be opened: {resolvedName}");
+            return;
+        }
+
+        using var buffer = new MemoryStream();
+        await source.CopyToAsync(buffer);
+
+        using var randomAccessStream = new InMemoryRandomAccessStream();
+        using (var output = randomAccessStream.GetOutputStreamAt(0))
+        using (var writer = new DataWriter(output))
+        {
+            writer.WriteBytes(buffer.ToArray());
+            await writer.StoreAsync();
+            writer.DetachStream();
+        }
+
+        randomAccessStream.Seek(0);
+        var bitmap = new BitmapImage();
+        await bitmap.SetSourceAsync(randomAccessStream);
+        image.Source = bitmap;
     }
 
     private void ShowSchoolSignInPage()
