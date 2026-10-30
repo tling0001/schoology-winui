@@ -54,6 +54,34 @@ internal sealed class SchoologyApiClient
             new Dictionary<string, string> { ["limit"] = "100" }, cancellationToken);
     }
 
+    internal Task<JsonDocument> GetUpdateCommentsAsync(
+        SchoologyAuthService.Session session, string kind, long entityId, long updateId,
+        CancellationToken cancellationToken = default)
+    {
+        var realm = kind == "Groups" ? "groups" : kind == "School Profile" ? "schools" : "sections";
+        return _auth.GetApiJsonAsync(session, $"{realm}/{entityId}/updates/{updateId}/comments",
+            new Dictionary<string, string>
+            {
+                ["start"] = "0", ["limit"] = "100",
+                ["with_attachments"] = "TRUE", ["richtext"] = "1"
+            }, cancellationToken);
+    }
+
+    internal Task<JsonDocument> SetUpdateLikeAsync(
+        SchoologyAuthService.Session session, long updateId, bool like,
+        CancellationToken cancellationToken = default) =>
+        _auth.SendApiJsonAsync(session, HttpMethod.Post, $"like/{updateId}",
+            new Dictionary<string, string> { ["like_action"] = like ? "true" : "false" }, cancellationToken);
+
+    internal Task<JsonDocument> AddUpdateCommentAsync(
+        SchoologyAuthService.Session session, string kind, long entityId, long updateId,
+        string comment, CancellationToken cancellationToken = default)
+    {
+        var realm = kind == "Groups" ? "groups" : kind == "School Profile" ? "schools" : "sections";
+        return _auth.SendApiJsonAsync(session, HttpMethod.Post, $"{realm}/{entityId}/updates/{updateId}/comments",
+            new Dictionary<string, string> { ["comment"] = comment, ["parent_id"] = "0" }, cancellationToken);
+    }
+
     private async Task<IReadOnlyList<SchoologyEntity>> GetEntitiesAsync(
         SchoologyAuthService.Session session, string path, string[] collectionKeys,
         CancellationToken cancellationToken)
@@ -104,9 +132,10 @@ internal sealed class SchoologyApiClient
                 ReadString(element, "name_last", "last_name")
             }.Where(value => !string.IsNullOrWhiteSpace(value))).Trim();
             var title = ReadString(element, "title", "name_display", "nameDisplay", "name",
-                "course_title", "courseTitle", "section_title", "sectionTitle", "subject", "message_subject")
+                "user_name", "author_name", "created_by", "course_title", "courseTitle",
+                "section_title", "sectionTitle", "subject", "message_subject")
                 ?? (string.IsNullOrWhiteSpace(personName) ? "Schoology item" : personName);
-            var subtitle = ReadString(element, "description", "body", "message", "role", "admin",
+            var subtitle = ReadString(element, "description", "body", "comment", "text", "message", "role", "admin",
                 "due", "due_date", "section_title", "sectionTitle", "created", "timestamp") ?? string.Empty;
             records.Add(new SchoologyApiRecord(title, subtitle, element.Clone()));
         }
@@ -144,6 +173,14 @@ internal sealed partial class SchoologyAuthService
     /// <summary>Execute an OAuth-signed GET against the configured Schoology API host.</summary>
     internal async Task<JsonDocument> GetApiJsonAsync(
         Session session, string path, IReadOnlyDictionary<string, string>? query,
+        CancellationToken cancellationToken = default) =>
+        await SendApiJsonAsync(session, HttpMethod.Get, path, query, cancellationToken);
+
+    /// <summary>Execute an OAuth-signed API mutation. Parameters are URL-encoded
+    /// into the request URI so OAuth 1.0a signs the complete parameter set.</summary>
+    internal async Task<JsonDocument> SendApiJsonAsync(
+        Session session, HttpMethod method, string path,
+        IReadOnlyDictionary<string, string>? query,
         CancellationToken cancellationToken = default)
     {
         if (session is null) throw new ArgumentNullException(nameof(session));
@@ -159,7 +196,7 @@ internal sealed partial class SchoologyAuthService
                 .Select(pair => $"{Uri.EscapeDataString(pair.Key)}={Uri.EscapeDataString(pair.Value)}"));
 
         using var response = await SendSignedRequestAsync(
-            HttpMethod.Get, builder.Uri.AbsoluteUri, () => null,
+            method, builder.Uri.AbsoluteUri, () => null,
             session.Token, session.Secret, null, cancellationToken);
         var body = await response.Content.ReadAsStringAsync(cancellationToken);
         if (!response.IsSuccessStatusCode)

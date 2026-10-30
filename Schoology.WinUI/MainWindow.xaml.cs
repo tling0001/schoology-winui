@@ -677,7 +677,7 @@ public sealed partial class MainWindow : Window
                     status.Text = "Verifying your Schoology account…";
                     _session = await _auth.CompleteSchoolBrowserSignInAsync(requestToken);
                     ShowHome();
-                    _ = LoadAccountCollectionsAsync();
+                    await LoadAccountCollectionsAsync();
                 }
                 catch (Exception ex)
                 {
@@ -865,10 +865,8 @@ public sealed partial class MainWindow : Window
         titleBar.Children.Add(commands);
         shell.Children.Add(titleBar);
         SetTitleBar(titleBar);
-        nativeTitleBar.Changed += (_, _) =>
-        {
-            titleBar.Padding = new Thickness(16, 0, Math.Max(12, nativeTitleBar.RightInset + 12), 0);
-        };
+        // AppWindowTitleBar exposes inset values, not a Changed event.
+        titleBar.Padding = new Thickness(16, 0, Math.Max(12, nativeTitleBar.RightInset + 12), 0);
 
         var nav = new NavigationView
         {
@@ -1222,6 +1220,11 @@ public sealed partial class MainWindow : Window
             }
             foreach (var record in records)
             {
+                if (tab == "Updates")
+                {
+                    body.Children.Add(BuildUpdateCard(kind, entityId, record));
+                    continue;
+                }
                 var item = new StackPanel { Spacing = 4 };
                 item.Children.Add(Text(record.Title, 15, true));
                 if (!string.IsNullOrWhiteSpace(record.Subtitle))
@@ -1233,6 +1236,161 @@ public sealed partial class MainWindow : Window
         {
             status.Text = $"Unable to load {tab.ToLowerInvariant()}: {ex.Message}";
         }
+    }
+
+    private UIElement BuildUpdateCard(string kind, long entityId, SchoologyApiRecord update)
+    {
+        var updateId = JsonLong(update.Data, "id", "update_id");
+        var card = new StackPanel { Spacing = 10 };
+        var heading = new StackPanel { Spacing = 3 };
+        heading.Children.Add(Text(update.Title, 15, true));
+        var author = ProfileValue(update.Data, "user_name", "author_name", "name_display", "created_by");
+        var created = ProfileValue(update.Data, "created", "created_at", "timestamp");
+        var metadata = string.Join(" · ", new[] { author, created }.Where(value => !string.IsNullOrWhiteSpace(value)));
+        if (!string.IsNullOrWhiteSpace(metadata))
+            heading.Children.Add(Text(metadata, 11));
+        card.Children.Add(heading);
+        if (!string.IsNullOrWhiteSpace(update.Subtitle))
+            card.Children.Add(Text(update.Subtitle, 13));
+
+        var commentsPanel = new StackPanel { Spacing = 8, Visibility = Visibility.Collapsed };
+        var commentStatus = Text("Comments have not been loaded.", 12);
+        var commentList = new StackPanel { Spacing = 6 };
+        var commentsLoaded = false;
+        var commentInput = new TextBox
+        {
+            PlaceholderText = "Write a comment…",
+            AcceptsReturn = true,
+            TextWrapping = TextWrapping.Wrap,
+            MinHeight = 64
+        };
+        AutomationProperties.SetAutomationId(commentInput, $"UpdateCommentInput_{updateId}");
+        var composer = new StackPanel { Spacing = 6 };
+        Button send = null!;
+        send = Action("Post comment", async (_, _) =>
+        {
+            var value = commentInput.Text.Trim();
+            if (updateId <= 0 || _session is null || value.Length == 0) return;
+            send.IsEnabled = false;
+            try
+            {
+                using var posted = await _api.AddUpdateCommentAsync(_session, kind, entityId, updateId, value);
+                commentInput.Text = string.Empty;
+                commentsLoaded = false;
+                await LoadUpdateCommentsAsync(kind, entityId, updateId, commentsPanel, commentStatus, commentList);
+                commentsLoaded = true;
+            }
+            catch (Exception ex) { await ShowApiErrorAsync("Unable to post comment", ex.Message); }
+            finally { send.IsEnabled = true; }
+        });
+        AutomationProperties.SetAutomationId(send, $"UpdateCommentSend_{updateId}");
+        composer.Children.Add(commentInput);
+        composer.Children.Add(send);
+        commentsPanel.Children.Add(commentStatus);
+        commentsPanel.Children.Add(commentList);
+        commentsPanel.Children.Add(composer);
+
+        var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+        var liked = JsonBoolean(update.Data, "user_liked", "liked", "user_like_action");
+        var likeCount = JsonLong(update.Data, "like_count", "likes_count", "likes");
+        Button likeButton = null!;
+        likeButton = Action(liked ? $"Unlike ({likeCount})" : $"Like ({likeCount})", async (_, _) =>
+        {
+            if (updateId <= 0 || _session is null) return;
+            likeButton.IsEnabled = false;
+            try
+            {
+                using var result = await _api.SetUpdateLikeAsync(_session, updateId, !liked);
+                liked = !liked;
+                likeCount = Math.Max(0, likeCount + (liked ? 1 : -1));
+                likeButton.Content = liked ? $"Unlike ({likeCount})" : $"Like ({likeCount})";
+            }
+            catch (Exception ex) { await ShowApiErrorAsync("Unable to update like", ex.Message); }
+            finally { likeButton.IsEnabled = true; }
+        });
+        AutomationProperties.SetAutomationId(likeButton, $"UpdateLike_{updateId}");
+        var commentsButton = Action("Comments", async (_, _) =>
+        {
+            commentsPanel.Visibility = commentsPanel.Visibility == Visibility.Visible
+                ? Visibility.Collapsed : Visibility.Visible;
+            if (commentsPanel.Visibility == Visibility.Visible && !commentsLoaded)
+            {
+                await LoadUpdateCommentsAsync(kind, entityId, updateId, commentsPanel, commentStatus, commentList);
+                commentsLoaded = true;
+            }
+        });
+        AutomationProperties.SetAutomationId(commentsButton, $"UpdateComments_{updateId}");
+        actions.Children.Add(likeButton);
+        actions.Children.Add(commentsButton);
+        card.Children.Add(actions);
+        card.Children.Add(commentsPanel);
+        return Surface(card);
+    }
+
+    private async Task LoadUpdateCommentsAsync(
+        string kind, long entityId, long updateId, StackPanel panel,
+        TextBlock status, StackPanel list)
+    {
+        try
+        {
+            if (_session is null || updateId <= 0)
+                throw new InvalidOperationException("This update does not have a valid Schoology ID.");
+            status.Text = "Loading comments…";
+            list.Children.Clear();
+            using var document = await _api.GetUpdateCommentsAsync(_session, kind, entityId, updateId);
+            var comments = SchoologyApiClient.ReadRecords(document.RootElement, "comment", "comments");
+            foreach (var comment in comments)
+            {
+                var row = new StackPanel { Spacing = 3 };
+                row.Children.Add(Text(comment.Title, 12, true));
+                if (!string.IsNullOrWhiteSpace(comment.Subtitle))
+                    row.Children.Add(Text(comment.Subtitle, 12));
+                list.Children.Add(Surface(row));
+            }
+            status.Text = comments.Count == 0 ? "No comments yet. Be the first to comment." : $"{comments.Count} comments";
+        }
+        catch (Exception ex)
+        {
+            status.Text = $"Unable to load comments: {ex.Message}";
+            var retry = Action("Retry", async (_, _) =>
+                await LoadUpdateCommentsAsync(kind, entityId, updateId, panel, status, list));
+            panel.Children.Insert(Math.Max(0, panel.Children.IndexOf(status) + 1), retry);
+        }
+    }
+
+    private async Task ShowApiErrorAsync(string title, string message)
+    {
+        var dialog = new ContentDialog
+        {
+            Title = title,
+            Content = message,
+            CloseButtonText = "OK",
+            XamlRoot = _root.XamlRoot
+        };
+        await dialog.ShowAsync();
+    }
+
+    private static long JsonLong(System.Text.Json.JsonElement data, params string[] keys)
+    {
+        if (data.ValueKind != System.Text.Json.JsonValueKind.Object) return 0;
+        foreach (var key in keys)
+            if (data.TryGetProperty(key, out var value) && long.TryParse(value.ToString(), out var result))
+                return result;
+        return 0;
+    }
+
+    private static bool JsonBoolean(System.Text.Json.JsonElement data, params string[] keys)
+    {
+        if (data.ValueKind != System.Text.Json.JsonValueKind.Object) return false;
+        foreach (var key in keys)
+        {
+            if (!data.TryGetProperty(key, out var value)) continue;
+            if (value.ValueKind == System.Text.Json.JsonValueKind.True) return true;
+            if (value.ValueKind == System.Text.Json.JsonValueKind.False) return false;
+            if (bool.TryParse(value.ToString(), out var parsed)) return parsed;
+            if (value.ToString() == "1") return true;
+        }
+        return false;
     }
 
     private UIElement BuildMessagesPage()
