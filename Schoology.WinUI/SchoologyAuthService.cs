@@ -147,26 +147,57 @@ internal sealed partial class SchoologyAuthService
 
     public async Task<Session?> RestoreSessionAsync(CancellationToken cancellationToken = default)
     {
+        App.WriteStartupLog("RestoreSessionAsync entered.");
         try
         {
+            App.WriteStartupLog("Opening Windows Credential Locker.");
             var vault = new PasswordVault();
             var credential = FindVaultCredentials(vault).FirstOrDefault();
-            if (credential is null) return null;
+            if (credential is null)
+            {
+                App.WriteStartupLog("No Schoology credential exists in Windows Credential Locker.");
+                return null;
+            }
+
+            App.WriteStartupLog("Found a saved Schoology credential; retrieving its protected password.");
             credential.RetrievePassword();
             using var document = JsonDocument.Parse(credential.Password);
             var root = document.RootElement;
             var token = root.GetProperty("token").GetString();
             var secret = root.GetProperty("secret").GetString();
-            if (string.IsNullOrWhiteSpace(token) || string.IsNullOrWhiteSpace(secret)) return null;
+            if (string.IsNullOrWhiteSpace(token) || string.IsNullOrWhiteSpace(secret))
+            {
+                App.WriteStartupLog("Saved Schoology credential did not contain a usable OAuth token and secret.");
+                return null;
+            }
+
+            App.WriteStartupLog("Synchronizing Schoology server time before OAuth profile verification.");
             await SyncServerTimeAsync(cancellationToken);
+            App.WriteStartupLog("Requesting the current Schoology user profile to validate the saved session.");
             var user = await GetCurrentUserAsync(token, secret, cancellationToken);
             var id = ReadLong(user, "id");
-            if (id <= 0) return null;
+            if (id <= 0)
+            {
+                App.WriteStartupLog("Schoology profile validation returned an invalid user ID.");
+                return null;
+            }
+
             var session = new Session(token, secret, id, user);
+            App.WriteStartupLog($"Saved Schoology session validated for user ID {id}; refreshing credential metadata.");
             SaveSession(session);
+            App.WriteStartupLog("Saved Schoology session restoration completed successfully.");
             return session;
         }
-        catch (Exception ex) when (ex is not OperationCanceledException) { return null; }
+        catch (OperationCanceledException)
+        {
+            App.WriteStartupLog("Saved Schoology session restoration was cancelled.");
+            throw;
+        }
+        catch (Exception ex)
+        {
+            App.WriteStartupLog("Saved Schoology session restoration failed inside the authentication service.", ex);
+            return null;
+        }
     }
 
     public void SignOut()

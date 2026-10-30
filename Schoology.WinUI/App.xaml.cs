@@ -14,13 +14,18 @@ public partial class App : Application
     {
         // Register before InitializeComponent so XAML startup failures are captured.
         UnhandledException += (_, args) =>
-            WriteStartupLog("Microsoft.UI.Xaml.Application.UnhandledException", args.Exception);
+        {
+            WriteStartupLog($"Microsoft.UI.Xaml.Application.UnhandledException (Handled={args.Handled})", args.Exception);
+        };
 
         AppDomain.CurrentDomain.UnhandledException += (_, args) =>
-            WriteStartupLog("AppDomain.UnhandledException", args.ExceptionObject as Exception);
+            WriteStartupLog($"AppDomain.UnhandledException (IsTerminating={args.IsTerminating})", args.ExceptionObject as Exception);
+
+        AppDomain.CurrentDomain.ProcessExit += (_, _) =>
+            WriteStartupLog("AppDomain.ProcessExit reached.");
 
         TaskScheduler.UnobservedTaskException += (_, args) =>
-            WriteStartupLog("TaskScheduler.UnobservedTaskException", args.Exception);
+            WriteStartupLog($"TaskScheduler.UnobservedTaskException (Observed={args.Observed})", args.Exception);
 
         WriteStartupLog("App constructor entered.");
         InitializeComponent();

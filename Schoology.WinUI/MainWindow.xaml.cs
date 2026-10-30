@@ -66,21 +66,29 @@ public sealed partial class MainWindow : Window
         App.WriteStartupLog("Splash screen created.");
 
         _splashTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(1500) };
-        _splashTimer.Tick += (_, _) =>
+        _splashTimer.Tick += async (_, _) =>
         {
+            _splashTimer.Stop();
             try
             {
                 App.WriteStartupLog("Splash timer tick; switching to login.");
-                _splashTimer.Stop();
                 SetWindowSize(1260, 820);
                 ShowLogin();
-                App.WriteStartupLog("Login screen created.");
-                _ = RestoreSavedSessionAsync();
+                App.WriteStartupLog("Login screen created; beginning saved-session restoration.");
+                await RestoreSavedSessionAsync();
+                App.WriteStartupLog("Startup session restoration sequence completed.");
             }
             catch (Exception ex)
             {
-                App.WriteStartupLog("Exception while switching from splash to login.", ex);
-                throw;
+                App.WriteStartupLog("Unhandled exception in splash/login/session transition.", ex);
+                try
+                {
+                    if (_page != "login") ShowLogin();
+                }
+                catch (Exception fallbackException)
+                {
+                    App.WriteStartupLog("Could not restore the login screen after startup failure.", fallbackException);
+                }
             }
         };
         _splashTimer.Start();
@@ -807,15 +815,42 @@ public sealed partial class MainWindow : Window
 
     private async Task RestoreSavedSessionAsync()
     {
+        App.WriteStartupLog("RestoreSavedSessionAsync entered.");
         try
         {
+            App.WriteStartupLog("Requesting saved Schoology session from Windows Credential Locker.");
             var restored = await _auth.RestoreSessionAsync();
-            if (restored is null || _page != "login") return;
+            App.WriteStartupLog(restored is null
+                ? "No usable saved Schoology session was restored; remaining on login."
+                : $"Saved Schoology session restored for user ID {restored.UserId}.");
+
+            if (restored is null || _page != "login")
+            {
+                App.WriteStartupLog($"Skipping homepage transition; restored={restored is not null}, current page={_page}.");
+                return;
+            }
+
             _session = restored;
+            App.WriteStartupLog("Building logged-in homepage from restored session.");
             ShowHome();
-            _ = LoadAccountCollectionsAsync();
+            App.WriteStartupLog("Logged-in homepage visual tree created.");
+            await LoadAccountCollectionsAsync();
+            App.WriteStartupLog("Initial account collections request finished.");
         }
-        catch (Exception ex) { App.WriteStartupLog("Saved Schoology session restoration failed.", ex); }
+        catch (Exception ex)
+        {
+            App.WriteStartupLog("Saved Schoology session restoration or homepage initialization failed.", ex);
+            _session = null;
+            try
+            {
+                ShowLogin();
+                App.WriteStartupLog("Returned to login after saved-session startup failure.");
+            }
+            catch (Exception fallbackException)
+            {
+                App.WriteStartupLog("Failed to return to login after homepage initialization failure.", fallbackException);
+            }
+        }
     }
 
     private async void OpenDistrictSignInAsync()
