@@ -17,7 +17,6 @@ using Windows.Storage.Streams;
 using Microsoft.UI.Xaml.Media.Imaging;
 using Windows.UI.ViewManagement;
 using Windows.System;
-using Windows.Storage;
 
 namespace Schoology.WinUI;
 
@@ -1580,7 +1579,11 @@ public sealed partial class MainWindow : Window
             _root.DispatcherQueue.TryEnqueue(() =>
             {
                 list.Items.Clear();
-                list.Items.Add(new ListViewItem { Content = Surface(Text($"Unable to load calendar: {ex.Message}")) });
+                var error = new StackPanel { Spacing = 8, Margin = new Thickness(12) };
+                error.Children.Add(Text($"Unable to load calendar: {ex.Message}", 13));
+                error.Children.Add(Action("Retry", async (_, _) =>
+                    await FetchCalendarIntoAsync(list, heading, getEvents, setEvents)));
+                list.Items.Add(new ListViewItem { Content = error });
             });
         }
     }
@@ -2244,7 +2247,8 @@ public sealed partial class MainWindow : Window
         var profile = authorProfile ?? update.Data;
         var author = ProfileValue(profile, "name_display", "display_name", "name", "user_name") ??
             ProfileValue(update.Data, "user_name", "author_name", "name_display", "created_by") ?? "Schoology";
-        var created = ProfileValue(update.Data, "created", "created_at", "timestamp");
+        var createdRaw = ProfileValue(update.Data, "created", "created_at", "timestamp");
+        var created = ParseSchoologyDate(createdRaw)?.ToString("g", System.Globalization.CultureInfo.CurrentCulture) ?? createdRaw;
         var picture = ProfileValue(profile, "picture_url", "pictureUrl", "picture", "photo_url", "profile_url") ??
             ProfileValue(update.Data, "picture_url", "author_picture", "user_picture", "avatar_url");
         var heading = new Grid { ColumnSpacing = 10 };
