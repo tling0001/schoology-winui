@@ -1782,9 +1782,11 @@ public sealed partial class MainWindow : Window
             compactLabels.Children.Add(Text(selected.Subtitle, 12));
         if (kind == "Courses" && selected is not null)
         {
-            var schoolName = ProfileValue(selected.Data, "school_title", "school_name", "school");
-            var schoolId = ProfileValue(selected.Data, "school_id", "schoolId");
-            if (!string.IsNullOrWhiteSpace(schoolName) && long.TryParse(schoolId, out var schoolNumber) && schoolNumber > 0)
+            var schoolName = ProfileValue(selected.Data, "school_title", "school_name", "school") ??
+                (_session is null ? null : ProfileValue(_session.User, "school_title", "school_name", "school"));
+            var schoolId = ProfileValue(selected.Data, "school_id", "schoolId") ??
+                (_session is null ? null : ProfileValue(_session.User, "school_id", "schoolId"));
+            if (!string.IsNullOrWhiteSpace(schoolName) && GetSchoolProfileEntities().Any())
                 compactLabels.Children.Add(Action($"School: {schoolName}", (_, _) => ShowThreePane("School Profile")));
         }
         Grid.SetColumn(compactLabels, 1); compactIdentity.Children.Add(compactLabels);
@@ -2163,7 +2165,10 @@ public sealed partial class MainWindow : Window
                 labels.Children.Add(Text(person.Name, 14, true));
                 if (!string.IsNullOrWhiteSpace(person.Role)) labels.Children.Add(Text(person.Role, 11));
                 Grid.SetColumn(labels, 1); row.Children.Add(labels);
-                list.Items.Add(new ListViewItem { Content = row, Tag = person.Id });
+                var memberItem = new ListViewItem { Content = row, Tag = person.Id,
+                    HorizontalContentAlignment = HorizontalAlignment.Stretch };
+                memberItem.Tapped += async (_, _) => await OpenMemberProfileAsync(person.Id);
+                list.Items.Add(memberItem);
             }
         }
         filters.SelectionChanged += (_, _) => Render();
@@ -2175,6 +2180,26 @@ public sealed partial class MainWindow : Window
     }
 
 
+
+    private async Task OpenMemberProfileAsync(long userId)
+    {
+        if (_session is null || userId <= 0) return;
+        try
+        {
+            using var document = await _api.GetUserAsync(_session, userId);
+            var user = document.RootElement;
+            if (user.ValueKind == JsonValueKind.Object && user.TryGetProperty("user", out var nested)) user = nested;
+            var details = new StackPanel { Spacing = 8 };
+            var name = ProfileValue(user, "name_display", "display_name", "name") ?? "Schoology member";
+            details.Children.Add(Text(name, 19, true));
+            AddProfileField(details, "Username", ProfileValue(user, "username"));
+            AddProfileField(details, "Email", ProfileValue(user, "primary_email", "email"));
+            AddProfileField(details, "School", ProfileValue(user, "school_title", "school_name"));
+            await new ContentDialog { Title = "Member profile", Content = details,
+                CloseButtonText = "Close", XamlRoot = _root.XamlRoot }.ShowAsync();
+        }
+        catch (Exception ex) { await ShowApiErrorAsync("Unable to open member profile", ex.Message); }
+    }
 
     private static string NormalizeSchoologyImageUrl(string value)
     {

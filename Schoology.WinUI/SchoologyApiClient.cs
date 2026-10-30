@@ -220,7 +220,7 @@ internal sealed partial class SchoologyAuthService
             throw new InvalidOperationException("The Schoology API path is invalid.");
         var url = $"https://{ApiHost}/v1/{normalizedPath}";
         using var response = await SendSignedRequestAsync(method, url,
-            () => new FormUrlEncodedContent(fields), session.Token, session.Secret, null, cancellationToken);
+            () => new FormUrlEncodedContent(fields), session.Token, session.Secret, null, cancellationToken, fields);
         var body = await response.Content.ReadAsStringAsync(cancellationToken);
         if (!response.IsSuccessStatusCode)
             throw new InvalidOperationException(ReadableError(body, "Schoology could not update this item", response.StatusCode));

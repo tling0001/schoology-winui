@@ -220,7 +220,8 @@ internal sealed partial class SchoologyAuthService
         string token,
         string secret,
         string? scannedQrData,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IReadOnlyDictionary<string, string>? formParameters = null)
     {
         var currentUri = new Uri(rawUrl, UriKind.Absolute);
         var expectedHost = currentUri.IdnHost;
@@ -230,7 +231,7 @@ internal sealed partial class SchoologyAuthService
             {
                 Content = contentFactory()
             };
-            AddOAuth(request, method, currentUri.AbsoluteUri, token, secret, scannedQrData);
+            AddOAuth(request, method, currentUri.AbsoluteUri, token, secret, scannedQrData, formParameters);
             AddClientIdentity(request);
             var response = await OAuthHttp.SendAsync(
                 request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
@@ -345,7 +346,8 @@ internal sealed partial class SchoologyAuthService
         request.Headers.TryAddWithoutValidation("Accept", "application/json, text/plain, */*");
     }
 
-    private static void AddOAuth(HttpRequestMessage request, HttpMethod method, string rawUrl, string token, string secret, string? scannedQrData = null)
+    private static void AddOAuth(HttpRequestMessage request, HttpMethod method, string rawUrl, string token, string secret,
+        string? scannedQrData = null, IReadOnlyDictionary<string, string>? formParameters = null)
     {
         var uri = new Uri(rawUrl);
         var nonce = Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();
@@ -354,6 +356,8 @@ internal sealed partial class SchoologyAuthService
         if (!string.IsNullOrEmpty(uri.Query))
             parameters.AddRange(ParseQuery(uri.Query).Select(pair => (pair.Key, pair.Value)));
         if (!string.IsNullOrEmpty(scannedQrData)) parameters.Add(("scanned_qr_data", JavaEncode(scannedQrData)));
+        if (formParameters is not null)
+            parameters.AddRange(formParameters.Select(pair => (pair.Key, pair.Value)));
         parameters.AddRange(new[]
         {
             ("oauth_consumer_key", ConsumerKey), ("oauth_nonce", nonce), ("oauth_signature_method", "HMAC-SHA1"),
