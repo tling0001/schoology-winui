@@ -971,10 +971,14 @@ public sealed partial class MainWindow : Window
             Content = null
         };
         // WinUI 3 styles the NavigationView pane through theme resources rather than a PaneBackground property.
-        var drawerBrush = new AcrylicBrush { TintColor = Microsoft.UI.ColorHelper.FromArgb(245, 0, 33, 55),\n            TintOpacity = 0.92, FallbackColor = Microsoft.UI.ColorHelper.FromArgb(255, 0, 33, 55) };
+        var drawerBrush = new AcrylicBrush { TintColor = Microsoft.UI.ColorHelper.FromArgb(245, 0, 33, 55),
+            TintOpacity = 0.92, FallbackColor = Microsoft.UI.ColorHelper.FromArgb(255, 0, 33, 55) };
         nav.Resources["NavigationViewDefaultPaneBackground"] = drawerBrush;
         nav.Resources["NavigationViewExpandedPaneBackground"] = drawerBrush;
-        nav.Resources["NavigationViewCompactPaneBackground"] = drawerBrush;\n        nav.Resources["NavigationViewItemForeground"] = Brush("#FFFFFFFF");\n        nav.Resources["NavigationViewItemForegroundPointerOver"] = Brush("#FFFFFFFF");\n        nav.Resources["NavigationViewItemForegroundSelected"] = Brush("#FFFFFFFF");
+        nav.Resources["NavigationViewCompactPaneBackground"] = drawerBrush;
+        nav.Resources["NavigationViewItemForeground"] = Brush("#FFFFFFFF");
+        nav.Resources["NavigationViewItemForegroundPointerOver"] = Brush("#FFFFFFFF");
+        nav.Resources["NavigationViewItemForegroundSelected"] = Brush("#FFFFFFFF");
         var animationsEnabled = new UISettings().AnimationsEnabled;
         var initialTransition = new SlideNavigationTransitionInfo { Effect = SlideNavigationTransitionEffect.FromRight };
         var sectionFrame = new Frame
