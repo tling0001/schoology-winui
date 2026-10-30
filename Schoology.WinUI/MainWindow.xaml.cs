@@ -1326,33 +1326,37 @@ public sealed partial class MainWindow : Window
         return new ScrollViewer { Content = panel, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
     }
 
+    private async Task ResolvePostAuthorsAsync(IReadOnlyList<SchoologyApiRecord> records, SchoologyAuthService.Session session)
+    {
+        var ids = records.Select(record => JsonLong(record.Data, "user_id", "uid", "author_id", "authorId", "created_by_id"))
+            .Where(id => id > 0).Distinct().Where(id => !_userProfileCache.ContainsKey(id)).ToArray();
+        await Task.WhenAll(ids.Select(async id =>
+        {
+            try
+            {
+                using var profile = await _api.GetUserAsync(session, id);
+                var user = profile.RootElement;
+                if (user.ValueKind == JsonValueKind.Object && user.TryGetProperty("user", out var nested)) user = nested;
+                _userProfileCache[id] = user.Clone();
+            }
+            catch (Exception ex) { App.WriteStartupLog($"Could not resolve Schoology post author {id}.", ex); }
+        }));
+    }
+
     private async Task LoadRecentActivityAsync(StackPanel panel, TextBlock status)
     {
         try
         {
-            if (_session is null) throw new InvalidOperationException("Sign in to view recent activity.");
-            using var document = await _auth.GetApiJsonAsync(_session, "recent",
+            var session = _session ?? throw new InvalidOperationException("Sign in to view recent activity.");
+            using var document = await _auth.GetApiJsonAsync(session, "recent",
                 new Dictionary<string, string> { ["start"] = "0", ["limit"] = "30", ["with_attachments"] = "TRUE", ["richtext"] = "1" });
             var records = SchoologyApiClient.ReadRecords(document.RootElement, "update", "updates", "update_list");
-            var authorIds = records.Select(x => JsonLong(x.Data, "user_id", "uid", "author_id", "authorId"))
-                .Where(x => x > 0).Distinct().ToArray();
-            await Task.WhenAll(authorIds.Select(async id =>
-            {
-                if (_userProfileCache.ContainsKey(id)) return;
-                try
-                {
-                    using var profile = await _api.GetUserAsync(_session, id);
-                    var user = profile.RootElement;
-                    if (user.ValueKind == JsonValueKind.Object && user.TryGetProperty("user", out var nested)) user = nested;
-                    _userProfileCache[id] = user.Clone();
-                }
-                catch (Exception ex) { App.WriteStartupLog($"Could not resolve Schoology post author {id}.", ex); }
-            }));
+            await ResolvePostAuthorsAsync(records, session);
             panel.Children.Remove(status);
             if (records.Count == 0) { panel.Children.Add(Surface(Text("No recent activity was returned by Schoology."))); return; }
             foreach (var record in records)
             {
-                var id = JsonLong(record.Data, "user_id", "uid", "author_id", "authorId");
+                var id = JsonLong(record.Data, "user_id", "uid", "author_id", "authorId", "created_by_id");
                 JsonElement? profile = id > 0 && _userProfileCache.TryGetValue(id, out var cached) ? cached : null;
                 panel.Children.Add(BuildUpdateCard("Recent", 0, record, profile));
             }
@@ -1905,7 +1909,13 @@ public sealed partial class MainWindow : Window
             }
             if (tab == "Updates")
             {
-                foreach (var record in records) body.Children.Add(BuildUpdateCard(kind, entityId, record));
+                await ResolvePostAuthorsAsync(records, session);
+                foreach (var record in records)
+                {
+                    var authorId = JsonLong(record.Data, "user_id", "uid", "author_id", "authorId", "created_by_id");
+                    JsonElement? profile = authorId > 0 && _userProfileCache.TryGetValue(authorId, out var cached) ? cached : null;
+                    body.Children.Add(BuildUpdateCard(kind, entityId, record, profile));
+                }
                 return;
             }
             var list = new ListView { SelectionMode = ListViewSelectionMode.None, HorizontalContentAlignment = HorizontalAlignment.Stretch, MaxHeight = 680 };
@@ -1979,9 +1989,46 @@ public sealed partial class MainWindow : Window
                 list.Items.Add(item);
             }
         }
+        async Task OpenMaterialAsync(SchoologyApiRecord record)
+        {
+            var title = ProfileValue(record.Data, "title", "name", "filename", "file_name") ?? record.Title;
+            var rawUrl = ProfileValue(record.Data, "web_url", "webUrl", "url", "link", "download_url", "downloadUrl", "file_url", "fileUrl");
+            if (!string.IsNullOrWhiteSpace(rawUrl))
+            {
+                if (!rawUrl.StartsWith("https://", StringComparison.OrdinalIgnoreCase) &&
+                    !rawUrl.StartsWith("http://", StringComparison.OrdinalIgnoreCase))
+                    rawUrl = "https://app.schoology.com/" + rawUrl.TrimStart('/');
+                if (Uri.TryCreate(rawUrl, UriKind.Absolute, out var uri) && uri.Scheme == Uri.UriSchemeHttps)
+                {
+                    var browser = new WebView2 { MinWidth = 680, MinHeight = 520 };
+                    try
+                    {
+                        await browser.EnsureCoreWebView2Async();
+                        browser.CoreWebView2.Navigate(uri.AbsoluteUri);
+                        var dialog = new ContentDialog { Title = title, Content = browser,
+                            CloseButtonText = "Close", XamlRoot = _root.XamlRoot };
+                        await dialog.ShowAsync();
+                        return;
+                    }
+                    catch (Exception ex) { App.WriteStartupLog("Embedded material navigation failed.", ex); }
+                }
+            }
+            var details = new StackPanel { Spacing = 8 };
+            details.Children.Add(Text(title, 18, true));
+            var description = ProfileValue(record.Data, "description", "body", "due", "due_date", "type");
+            if (!string.IsNullOrWhiteSpace(description)) details.Children.Add(Text(StripMarkup(description), 13));
+            details.Children.Add(Text("Schoology did not provide an embeddable HTTPS link for this material.", 12));
+            await new ContentDialog { Title = "Material details", Content = details,
+                CloseButtonText = "Close", XamlRoot = _root.XamlRoot }.ShowAsync();
+        }
+
         async Task OpenFolderAsync(SchoologyApiRecord record)
         {
-            if (!string.Equals(ProfileValue(record.Data, "type", "document_type", "documentType"), "folder", StringComparison.OrdinalIgnoreCase)) return;
+            if (!string.Equals(ProfileValue(record.Data, "type", "document_type", "documentType"), "folder", StringComparison.OrdinalIgnoreCase))
+            {
+                await OpenMaterialAsync(record);
+                return;
+            }
             var folderId = JsonLong(record.Data, "id", "folder_id", "folderId");
             if (folderId <= 0 || _session is null) return;
             try
