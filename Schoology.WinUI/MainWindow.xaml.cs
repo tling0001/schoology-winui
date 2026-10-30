@@ -30,7 +30,6 @@ public sealed partial class MainWindow : Window
     private NavigationView? _appNavigation;
     private SplitView? _homeSplitView;
     private Frame? _sectionFrame;
-    private ListView? _entityListView;
     private string _selectedEntity = string.Empty;
     private long _selectedEntityId;
     private readonly SchoologyAuthService _auth = new(false);
@@ -334,7 +333,6 @@ public sealed partial class MainWindow : Window
     {
         _page = "login";
         _sectionFrame = null;
-        _entityListView = null;
         _ = StopQrScannerAsync();
         var dark = _root.ActualTheme == ElementTheme.Dark;
         var scroll = new ScrollViewer
@@ -973,10 +971,10 @@ public sealed partial class MainWindow : Window
             Content = null
         };
         // WinUI 3 styles the NavigationView pane through theme resources rather than a PaneBackground property.
-        var drawerBrush = Brush("#FF002137");
+        var drawerBrush = new AcrylicBrush { TintColor = Microsoft.UI.ColorHelper.FromArgb(245, 0, 33, 55),\n            TintOpacity = 0.92, FallbackColor = Microsoft.UI.ColorHelper.FromArgb(255, 0, 33, 55) };
         nav.Resources["NavigationViewDefaultPaneBackground"] = drawerBrush;
         nav.Resources["NavigationViewExpandedPaneBackground"] = drawerBrush;
-        nav.Resources["NavigationViewCompactPaneBackground"] = drawerBrush;
+        nav.Resources["NavigationViewCompactPaneBackground"] = drawerBrush;\n        nav.Resources["NavigationViewItemForeground"] = Brush("#FFFFFFFF");\n        nav.Resources["NavigationViewItemForegroundPointerOver"] = Brush("#FFFFFFFF");\n        nav.Resources["NavigationViewItemForegroundSelected"] = Brush("#FFFFFFFF");
         var animationsEnabled = new UISettings().AnimationsEnabled;
         var initialTransition = new SlideNavigationTransitionInfo { Effect = SlideNavigationTransitionEffect.FromRight };
         var sectionFrame = new Frame
@@ -1487,14 +1485,22 @@ public sealed partial class MainWindow : Window
 
     private UIElement BuildEntityTabContent(string kind, long entityId, string entity, string tab)
     {
-        var body = new StackPanel { Spacing = 14, Margin = new Thickness(8) };
-        body.Children.Add(Text(entity, 23, true));
-        body.Children.Add(Text(tab, 17, true));
+        var layout = new Grid { RowSpacing = 8, Margin = new Thickness(8) };
+        layout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        layout.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        var heading = new StackPanel { Spacing = 4 };
+        heading.Children.Add(Text(entity, 23, true)); heading.Children.Add(Text(tab, 17, true));
+        Grid.SetRow(heading, 0); layout.Children.Add(heading);
+        var body = new StackPanel { Spacing = 14 };
+        var scroll = new ScrollViewer { VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            VerticalScrollMode = tab is "Materials" or "Members" or "Discussions" or "Grades" or "Resources" ? ScrollMode.Disabled : ScrollMode.Enabled,
+            Content = body, Background = new SolidColorBrush(Colors.Transparent) };
+        Grid.SetRow(scroll, 1); layout.Children.Add(scroll);
         var status = Text("Loading from Schoology…", 13);
-        status.Foreground = ThemeBrush("SchoologyMutedTextBrush");
-        body.Children.Add(status);
+        status.Foreground = ThemeBrush("SchoologyMutedTextBrush"); body.Children.Add(status);
         _ = LoadEntityTabAsync(kind, entityId, tab, body, status);
-        return body;
+        return layout;
     }
 
     private async Task LoadEntityTabAsync(string kind, long entityId, string tab, StackPanel body, TextBlock status)
@@ -1747,28 +1753,65 @@ public sealed partial class MainWindow : Window
     {
         var updateId = JsonLong(update.Data, "id", "update_id");
         var card = new StackPanel { Spacing = 10 };
-        var heading = new StackPanel { Spacing = 3 };
-        heading.Children.Add(Text(update.Title, 15, true));
-        var author = ProfileValue(update.Data, "user_name", "author_name", "name_display", "created_by");
+        var author = ProfileValue(update.Data, "user_name", "author_name", "name_display", "created_by") ?? "Schoology";
         var created = ProfileValue(update.Data, "created", "created_at", "timestamp");
-        var metadata = string.Join(" · ", new[] { author, created }.Where(value => !string.IsNullOrWhiteSpace(value)));
-        if (!string.IsNullOrWhiteSpace(metadata))
-            heading.Children.Add(Text(metadata, 11));
+        var picture = ProfileValue(update.Data, "picture_url", "author_picture", "user_picture", "avatar_url");
+        var heading = new Grid { ColumnSpacing = 10 };
+        heading.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(40) });
+        heading.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        var avatar = new Border { Width = 40, Height = 40, CornerRadius = new CornerRadius(20),
+            Background = ThemeBrush("SchoologySubtleBrush") };
+        if (!string.IsNullOrWhiteSpace(picture))
+        {
+            try { avatar.Child = new Image { Source = new BitmapImage(new Uri(NormalizeSchoologyImageUrl(picture))),
+                Stretch = Microsoft.UI.Xaml.Media.Stretch.UniformToFill }; } catch { }
+        }
+        else avatar.Child = new FontIcon { Glyph = "\uE77B", FontSize = 19,
+            Foreground = ThemeBrush("SchoologyMutedTextBrush"), HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center };
+        heading.Children.Add(avatar);
+        var authorInfo = new StackPanel { Spacing = 3, VerticalAlignment = VerticalAlignment.Center };
+        authorInfo.Children.Add(Text(author, 14, true));
+        if (!string.IsNullOrWhiteSpace(created))
+        {
+            var date = Text(created, 11);
+            date.Foreground = ThemeBrush("SchoologyMutedTextBrush");
+            authorInfo.Children.Add(date);
+        }
+        Grid.SetColumn(authorInfo, 1); heading.Children.Add(authorInfo);
         card.Children.Add(heading);
+        var title = ProfileValue(update.Data, "title", "subject");
+        if (!string.IsNullOrWhiteSpace(title)) card.Children.Add(Text(title, 16, true));
         if (!string.IsNullOrWhiteSpace(update.Subtitle))
-            card.Children.Add(Text(update.Subtitle, 13));
+        {
+            var body = Text(StripMarkup(update.Subtitle), 14);
+            body.TextWrapping = TextWrapping.WrapWholeWords;
+            card.Children.Add(body);
+        }
+        if (update.Data.ValueKind == System.Text.Json.JsonValueKind.Object &&
+            update.Data.TryGetProperty("attachments", out var attachments) &&
+            attachments.ValueKind == System.Text.Json.JsonValueKind.Array)
+        {
+            var attachmentPanel = new StackPanel { Spacing = 5 };
+            foreach (var attachment in attachments.EnumerateArray())
+            {
+                var name = ProfileValue(attachment, "title", "name", "filename", "file_name") ?? "Attachment";
+                var type = ProfileValue(attachment, "type", "mime_type", "extension");
+                var line = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+                line.Children.Add(new FontIcon { Glyph = "\uE8A5", FontSize = 17,
+                    Foreground = ThemeBrush("SchoologyBlueBrush") });
+                line.Children.Add(Text(string.IsNullOrWhiteSpace(type) ? name : $"{name} · {type}", 12, true));
+                attachmentPanel.Children.Add(line);
+            }
+            if (attachmentPanel.Children.Count > 0) card.Children.Add(Surface(attachmentPanel, new Thickness(10)));
+        }
 
         var commentsPanel = new StackPanel { Spacing = 8, Visibility = Visibility.Collapsed };
         var commentStatus = Text("Comments have not been loaded.", 12);
         var commentList = new StackPanel { Spacing = 6 };
         var commentsLoaded = false;
-        var commentInput = new TextBox
-        {
-            PlaceholderText = "Write a comment…",
-            AcceptsReturn = true,
-            TextWrapping = TextWrapping.Wrap,
-            MinHeight = 64
-        };
+        var commentInput = new TextBox { PlaceholderText = "Write a comment…", AcceptsReturn = true,
+            TextWrapping = TextWrapping.Wrap, MinHeight = 64 };
         AutomationProperties.SetAutomationId(commentInput, $"UpdateCommentInput_{updateId}");
         var composer = new StackPanel { Spacing = 6 };
         Button send = null!;
@@ -1789,11 +1832,8 @@ public sealed partial class MainWindow : Window
             finally { send.IsEnabled = true; }
         });
         AutomationProperties.SetAutomationId(send, $"UpdateCommentSend_{updateId}");
-        composer.Children.Add(commentInput);
-        composer.Children.Add(send);
-        commentsPanel.Children.Add(commentStatus);
-        commentsPanel.Children.Add(commentList);
-        commentsPanel.Children.Add(composer);
+        composer.Children.Add(commentInput); composer.Children.Add(send);
+        commentsPanel.Children.Add(commentStatus); commentsPanel.Children.Add(commentList); commentsPanel.Children.Add(composer);
 
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         var liked = JsonBoolean(update.Data, "user_liked", "liked", "user_like_action");
@@ -1806,8 +1846,7 @@ public sealed partial class MainWindow : Window
             try
             {
                 using var result = await _api.SetUpdateLikeAsync(_session, updateId, !liked);
-                liked = !liked;
-                likeCount = Math.Max(0, likeCount + (liked ? 1 : -1));
+                liked = !liked; likeCount = Math.Max(0, likeCount + (liked ? 1 : -1));
                 likeButton.Content = liked ? $"Unlike ({likeCount})" : $"Like ({likeCount})";
             }
             catch (Exception ex) { await ShowApiErrorAsync("Unable to update like", ex.Message); }
@@ -1825,10 +1864,8 @@ public sealed partial class MainWindow : Window
             }
         });
         AutomationProperties.SetAutomationId(commentsButton, $"UpdateComments_{updateId}");
-        actions.Children.Add(likeButton);
-        actions.Children.Add(commentsButton);
-        card.Children.Add(actions);
-        card.Children.Add(commentsPanel);
+        actions.Children.Add(likeButton); actions.Children.Add(commentsButton);
+        card.Children.Add(actions); card.Children.Add(commentsPanel);
         return Surface(card);
     }
 
@@ -1846,10 +1883,13 @@ public sealed partial class MainWindow : Window
             var comments = SchoologyApiClient.ReadRecords(document.RootElement, "comment", "comments");
             foreach (var comment in comments)
             {
-                var row = new StackPanel { Spacing = 3 };
-                row.Children.Add(Text(comment.Title, 12, true));
-                if (!string.IsNullOrWhiteSpace(comment.Subtitle))
-                    row.Children.Add(Text(comment.Subtitle, 12));
+                var row = new StackPanel { Spacing = 4 };
+                var author = ProfileValue(comment.Data, "user_name", "author_name", "name_display", "created_by") ?? comment.Title;
+                row.Children.Add(Text(author, 12, true));
+                var created = ProfileValue(comment.Data, "created", "created_at", "timestamp");
+                if (!string.IsNullOrWhiteSpace(created)) { var date = Text(created, 10); date.Foreground = ThemeBrush("SchoologyMutedTextBrush"); row.Children.Add(date); }
+                var commentText = StripMarkup(ProfileValue(comment.Data, "comment", "body", "text", "message") ?? comment.Subtitle);
+                if (!string.IsNullOrWhiteSpace(commentText)) row.Children.Add(Text(commentText, 12));
                 list.Children.Add(Surface(row));
             }
             status.Text = comments.Count == 0 ? "No comments yet. Be the first to comment." : $"{comments.Count} comments";
@@ -1900,80 +1940,284 @@ public sealed partial class MainWindow : Window
 
     private UIElement BuildMessagesPage()
     {
-        var panel = new Grid { Margin = new Thickness(20), RowSpacing = 12 };
-        panel.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        panel.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        panel.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        panel.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-        panel.Children.Add(Text("Messages", 24, true));
-        var folders = new SelectorBar { HorizontalAlignment = HorizontalAlignment.Left };
-        folders.Items.Add(new SelectorBarItem { Text = "Inbox" });
-        folders.Items.Add(new SelectorBarItem { Text = "Sent" });
-        folders.SelectedItem = folders.Items[0];
-        Grid.SetRow(folders, 1); panel.Children.Add(folders);
-        var status = Text("Loading messages…", 13);
-        Grid.SetRow(status, 2); panel.Children.Add(status);
-        var list = new ListView { SelectionMode = ListViewSelectionMode.Single, IsItemClickEnabled = true,
-            HorizontalContentAlignment = HorizontalAlignment.Stretch };
+        var root = new Grid { Margin = new Thickness(18), ColumnSpacing = 12 };
+        root.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(360) });
+        root.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+        // One master list: the three mailbox modes share the same selection and
+        // detail surface rather than navigating between separate inbox/sent pages.
+        var left = new Grid { RowSpacing = 10, Background = ThemeBrush("SchoologySurfaceBrush"),
+            Margin = new Thickness(8) };
+        left.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        left.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        left.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        left.Children.Add(Text("Messages", 23, true));
+
+        var modes = new SelectorBar { HorizontalAlignment = HorizontalAlignment.Stretch };
+        foreach (var label in new[] { "Inbox", "Unread", "Sent" })
+            modes.Items.Add(new SelectorBarItem { Text = label });
+        modes.SelectedItem = modes.Items[0];
+        Grid.SetRow(modes, 1); left.Children.Add(modes);
+
+        var listHost = new Grid();
+        var mailboxFrame = new Frame { Background = new SolidColorBrush(Colors.Transparent) };
+        Grid.SetRow(mailboxFrame, 2); left.Children.Add(mailboxFrame);
+        var status = Text("Loading messages…", 12);
+        var list = new ListView { SelectionMode = ListViewSelectionMode.Single,
+            IsItemClickEnabled = true, HorizontalContentAlignment = HorizontalAlignment.Stretch,
+            Background = new SolidColorBrush(Colors.Transparent) };
         AutomationProperties.SetAutomationId(list, "SchoologyMessagesList");
-        Grid.SetRow(list, 3); panel.Children.Add(list);
-        async Task LoadFolderAsync(bool sent)
+        AutomationProperties.SetName(list, "Messages");
+        listHost.Children.Add(list);
+        var empty = Text("No messages in this folder.", 13);
+        empty.HorizontalAlignment = HorizontalAlignment.Center;
+        empty.VerticalAlignment = VerticalAlignment.Center;
+        empty.Visibility = Visibility.Collapsed;
+        listHost.Children.Add(empty);
+        var statusOverlay = new Border { Background = ThemeBrush("SchoologySurfaceBrush"),
+            Padding = new Thickness(8), VerticalAlignment = VerticalAlignment.Top, Child = status };
+        listHost.Children.Add(statusOverlay);
+        NavigateShellFrame(mailboxFrame, listHost, SlideNavigationTransitionEffect.FromRight);
+
+        var detail = new Grid { Background = ThemeBrush("SchoologySurfaceBrush") };
+        var detailFrame = new Frame { Background = new SolidColorBrush(Colors.Transparent) };
+        detail.Children.Add(detailFrame);
+        var placeholder = new StackPanel { Spacing = 8, HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center, MaxWidth = 420 };
+        placeholder.Children.Add(new FontIcon { Glyph = "\uE715", FontSize = 36,
+            Foreground = ThemeBrush("SchoologyMutedTextBrush"), HorizontalAlignment = HorizontalAlignment.Center });
+        placeholder.Children.Add(Text("Select a message", 19, true));
+        var placeholderText = Text("Your message content will appear here.", 13);
+        placeholderText.Foreground = ThemeBrush("SchoologyMutedTextBrush");
+        placeholder.Children.Add(placeholderText);
+        detail.Children.Add(placeholder);
+        Grid.SetColumn(left, 0); Grid.SetColumn(detail, 1);
+        root.Children.Add(left); root.Children.Add(detail);
+
+        IReadOnlyList<SchoologyApiRecord> inboxRecords = [];
+        IReadOnlyList<SchoologyApiRecord> sentRecords = [];
+        var currentMode = "Inbox";
+        bool loading = false;
+
+        bool IsUnread(SchoologyApiRecord record)
         {
+            var data = record.Data;
+            var unread = JsonBoolean(data, "unread", "is_unread", "isUnread");
+            if (unread) return true;
+            var read = JsonBoolean(data, "read", "is_read", "isRead");
+            if (data.ValueKind == System.Text.Json.JsonValueKind.Object)
+            {
+                foreach (var key in new[] { "message_status", "status", "read_status" })
+                    if (data.TryGetProperty(key, out var value))
+                    {
+                        var state = value.ToString();
+                        if (state.Equals("unread", StringComparison.OrdinalIgnoreCase) ||
+                            state.Equals("new", StringComparison.OrdinalIgnoreCase)) return true;
+                        if (state.Equals("read", StringComparison.OrdinalIgnoreCase)) return false;
+                    }
+            }
+            return !read && JsonBoolean(data, "is_new", "new_message");
+        }
+
+        void ShowDetailPlaceholder(string title, string description)
+        {
+            placeholder.Children.Clear();
+            placeholder.Children.Add(new FontIcon { Glyph = "\uE715", FontSize = 36,
+                Foreground = ThemeBrush("SchoologyMutedTextBrush"), HorizontalAlignment = HorizontalAlignment.Center });
+            placeholder.Children.Add(Text(title, 19, true));
+            var message = Text(description, 13);
+            message.Foreground = ThemeBrush("SchoologyMutedTextBrush");
+            placeholder.Children.Add(message);
+            placeholder.Visibility = Visibility.Visible;
+            NavigateShellFrame(detailFrame, placeholder, SlideNavigationTransitionEffect.FromLeft);
+        }
+
+        void RenderMessages()
+        {
+            list.Items.Clear();
+            var records = currentMode switch
+            {
+                "Sent" => sentRecords,
+                "Unread" => inboxRecords.Where(IsUnread).ToArray(),
+                _ => inboxRecords
+            };
+            foreach (var record in records)
+            {
+                var data = record.Data;
+                var id = JsonLong(data, "id", "message_id", "messageId");
+                var isUnread = currentMode != "Sent" && IsUnread(record);
+                var personName = currentMode == "Sent"
+                    ? ProfileValue(data, "recipient_name", "recipient_display_name", "to_name") ?? "To recipient"
+                    : ProfileValue(data, "author_name", "user_name", "name_display", "sender_name") ?? "Schoology user";
+                var subject = ProfileValue(data, "subject", "message_subject", "title") ?? record.Title;
+                var snippet = ProfileValue(data, "body", "message", "text", "message_body") ?? record.Subtitle;
+                var row = new Grid { ColumnSpacing = 10, Padding = new Thickness(8, 10, 8, 10) };
+                row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(4) });
+                row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+                var marker = new Border { Width = 3, CornerRadius = new CornerRadius(2),
+                    Background = isUnread ? ThemeBrush("SchoologyBlueBrush") : new SolidColorBrush(Colors.Transparent) };
+                row.Children.Add(marker);
+                var textStack = new StackPanel { Spacing = 3 };
+                var sender = Text(personName, 13, isUnread);
+                var subjectText = Text(subject, 13, isUnread);
+                subjectText.MaxLines = 1;
+                var preview = Text(StripMarkup(snippet), 11);
+                preview.MaxLines = 2;
+                preview.Foreground = ThemeBrush("SchoologyMutedTextBrush");
+                textStack.Children.Add(sender); textStack.Children.Add(subjectText); textStack.Children.Add(preview);
+                Grid.SetColumn(textStack, 1); row.Children.Add(textStack);
+                var item = new ListViewItem { Content = row, Tag = record,
+                    HorizontalContentAlignment = HorizontalAlignment.Stretch };
+                AutomationProperties.SetName(item, $"{personName}: {subject}");
+                list.Items.Add(item);
+            }
+            empty.Visibility = records.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+            statusOverlay.Visibility = loading ? Visibility.Visible : Visibility.Collapsed;
+            statusOverlay.Child = status;
+        }
+
+        async Task LoadMailboxAsync(string mode)
+        {
+            if (_session is null)
+            {
+                loading = false;
+                status.Text = "Sign in to view messages.";
+                RenderMessages();
+                ShowDetailPlaceholder("Messages unavailable", "Sign in to load your Schoology messages.");
+                return;
+            }
+            currentMode = mode;
+            loading = true;
+            status.Text = $"Loading {mode.ToLowerInvariant()}…";
+            RenderMessages();
             try
             {
-                if (_session is null) throw new InvalidOperationException("Sign in to view messages.");
-                status.Text = sent ? "Loading sent messages…" : "Loading inbox…";
-                list.Items.Clear();
-                using var document = await _api.GetMessagesAsync(_session, sent);
-                var records = SchoologyApiClient.ReadRecords(document.RootElement, "message", "messages");
-                foreach (var record in records)
+                if (mode == "Sent")
                 {
-                    var idText = ProfileValue(record.Data, sent ? "recipient_ids" : "author_id",
-                        sent ? "recipientIds" : "authorId") ?? "";
-                    if (idText.Contains(',')) idText = idText.Split(',')[0];
-                    long.TryParse(idText, out var userId);
-                    string name = sent ? "Recipient" : "Schoology";
-                    string? picture = null;
-                    if (userId > 0)
-                    {
-                        try
-                        {
-                            using var userDoc = await _api.GetUserAsync(_session, userId);
-                            var user = userDoc.RootElement.TryGetProperty("user", out var nested) ? nested : userDoc.RootElement;
-                            name = ProfileValue(user, "name_display", "display_name", "name") ?? name;
-                            picture = ProfileValue(user, "picture_url", "pictureUrl", "picture", "photo_url");
-                        }
-                        catch { }
-                    }
-                    var row = new Grid { ColumnSpacing = 12, Padding = new Thickness(8, 9, 8, 9) };
-                    row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(48) });
-                    row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-                    var avatar = new Image { Width = 44, Height = 44, Stretch = Microsoft.UI.Xaml.Media.Stretch.UniformToFill };
-                    if (!string.IsNullOrWhiteSpace(picture))
-                        try { avatar.Source = new BitmapImage(new Uri(NormalizeSchoologyImageUrl(picture))); } catch { }
-                    row.Children.Add(new Border { Width = 44, Height = 44, CornerRadius = new CornerRadius(22),
-                        Background = ThemeBrush("SchoologySubtleBrush"), Child = avatar });
-                    var labels = new StackPanel { Spacing = 3, VerticalAlignment = VerticalAlignment.Center };
-                    labels.Children.Add(Text(name, 14, true));
-                    labels.Children.Add(Text(record.Title, 13));
-                    if (!string.IsNullOrWhiteSpace(record.Subtitle)) labels.Children.Add(Text(record.Subtitle, 11));
-                    Grid.SetColumn(labels, 1); row.Children.Add(labels);
-                    list.Items.Add(new ListViewItem { Content = row, Tag = record });
+                    using var sent = await _api.GetMessagesAsync(_session, true);
+                    sentRecords = SchoologyApiClient.ReadRecords(sent.RootElement, "message", "messages");
                 }
-                status.Text = records.Count == 0 ? (sent ? "No sent messages." : "Your inbox is empty.") : $"{records.Count} messages";
+                else
+                {
+                    using var inbox = await _api.GetMessagesAsync(_session, false);
+                    inboxRecords = SchoologyApiClient.ReadRecords(inbox.RootElement, "message", "messages");
+                }
+                loading = false;
+                RenderMessages();
+                status.Text = recordsCountText(mode);
+                if (mode == "Unread" && !inboxRecords.Any(IsUnread))
+                    ShowDetailPlaceholder("You're all caught up", "There are no unread messages.");
+                else if (mode == "Sent" && sentRecords.Count == 0)
+                    ShowDetailPlaceholder("No sent messages", "Messages you send will appear here.");
+                else if (mode == "Inbox" && inboxRecords.Count == 0)
+                    ShowDetailPlaceholder("Your inbox is empty", "New messages will appear here.");
             }
-            catch (Exception ex) { status.Text = $"Unable to load messages: {ex.Message}"; }
+            catch (Exception ex)
+            {
+                loading = false;
+                status.Text = $"Unable to load {mode.ToLowerInvariant()}: {ex.Message}";
+                RenderMessages();
+            }
         }
-        folders.SelectionChanged += (_, _) => _ = LoadFolderAsync(folders.SelectedItem == folders.Items[1]);
+
+        string recordsCountText(string mode)
+        {
+            var count = mode == "Sent" ? sentRecords.Count :
+                mode == "Unread" ? inboxRecords.Count(IsUnread) : inboxRecords.Count;
+            return count == 1 ? "1 message" : $"{count} messages";
+        }
+
+        async Task OpenMessageAsync(SchoologyApiRecord record)
+        {
+            if (_session is null) return;
+            var id = JsonLong(record.Data, "id", "message_id", "messageId");
+            if (id <= 0)
+            {
+                await ShowApiErrorAsync("Unable to open message", "Schoology did not return a valid message ID.");
+                return;
+            }
+            placeholder.Visibility = Visibility.Collapsed;
+            var loadingPanel = new StackPanel { Spacing = 10, Margin = new Thickness(24) };
+            loadingPanel.Children.Add(new ProgressRing { IsActive = true, Width = 28, Height = 28 });
+            loadingPanel.Children.Add(Text("Loading message…", 13));
+            NavigateShellFrame(detailFrame, loadingPanel, SlideNavigationTransitionEffect.FromRight);
+            try
+            {
+                using var document = await _api.GetMessageAsync(_session, id);
+                var rootMessage = document.RootElement;
+                if (rootMessage.ValueKind == System.Text.Json.JsonValueKind.Object &&
+                    rootMessage.TryGetProperty("message", out var nested)) rootMessage = nested;
+                var subject = ProfileValue(rootMessage, "subject", "message_subject", "title") ?? record.Title;
+                var sender = ProfileValue(rootMessage, "author_name", "user_name", "sender_name", "name_display") ??
+                    ProfileValue(record.Data, "author_name", "user_name", "sender_name") ?? "Schoology user";
+                var bodyText = ProfileValue(rootMessage, "body", "message", "text", "message_body", "content") ??
+                    ProfileValue(record.Data, "body", "message", "text", "message_body", "content") ?? record.Subtitle;
+                var detailContent = new Grid { RowSpacing = 0 };
+                detailContent.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+                detailContent.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+                var header = new StackPanel { Spacing = 6, Margin = new Thickness(22, 18, 22, 14) };
+                var backButton = Action("‹ Messages", (_, _) => { left.Visibility = Visibility.Visible; if (root.ActualWidth < 760) detail.Visibility = Visibility.Collapsed; ShowDetailPlaceholder("Select a message", "Choose a message from the list to read it."); });
+                AutomationProperties.SetAutomationId(backButton, "MessageDetailBack");
+                backButton.Visibility = root.ActualWidth < 760 ? Visibility.Visible : Visibility.Collapsed;
+                header.Children.Add(backButton);
+                header.Children.Add(Text(subject, 22, true));
+                header.Children.Add(Text(sender, 12));
+                var created = ProfileValue(rootMessage, "created", "created_at", "timestamp");
+                if (!string.IsNullOrWhiteSpace(created)) header.Children.Add(Text(created, 11));
+                Grid.SetRow(header, 0); detailContent.Children.Add(header);
+                var body = new StackPanel { Spacing = 12 };
+                var messageBody = Text(StripMarkup(bodyText), 14);
+                messageBody.TextWrapping = TextWrapping.WrapWholeWords;
+                body.Children.Add(messageBody);
+                var scroll = new ScrollViewer { Content = body, VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+                    HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled, Margin = new Thickness(22, 14, 22, 22) };
+                Grid.SetRow(scroll, 1); detailContent.Children.Add(scroll);
+                NavigateShellFrame(detailFrame, detailContent, SlideNavigationTransitionEffect.FromRight);
+            }
+            catch (Exception ex)
+            {
+                var error = new StackPanel { Spacing = 10, Padding = new Thickness(24) };
+                error.Children.Add(Text($"Unable to load message: {ex.Message}", 13));
+                error.Children.Add(Action("Retry", async (_, _) => await OpenMessageAsync(record)));
+                NavigateShellFrame(detailFrame, error, SlideNavigationTransitionEffect.FromRight);
+            }
+        }
+
         list.ItemClick += async (_, args) =>
         {
-            if (args.ClickedItem is not ListViewItem { Tag: SchoologyApiRecord message }) return;
-            var dialog = new ContentDialog { Title = message.Title, Content = message.Subtitle,
-                CloseButtonText = "Close", XamlRoot = _root.XamlRoot };
-            await dialog.ShowAsync();
+            if (args.ClickedItem is ListViewItem { Tag: SchoologyApiRecord record })
+            {
+                await OpenMessageAsync(record);
+                if (root.ActualWidth < 760) { left.Visibility = Visibility.Collapsed; detail.Visibility = Visibility.Visible; }
+            }
         };
-        _ = LoadFolderAsync(false);
-        return panel;
+        modes.SelectionChanged += async (_, _) =>
+        {
+            if (modes.SelectedItem is not SelectorBarItem item) return;
+            var mode = item.Text;
+            if (mode == currentMode) return;
+            ShowDetailPlaceholder("Select a message", "Choose a message from the list to read it.");
+            await LoadMailboxAsync(mode);
+        };
+
+        // Responsive master/detail: on narrow windows, opening a message replaces
+        // the list surface and Back returns to the same selected mailbox.
+        root.SizeChanged += (_, args) =>
+        {
+            var narrow = args.NewSize.Width < 760;
+            left.Visibility = narrow && detailFrame.Content is not null ? Visibility.Collapsed : Visibility.Visible;
+            detail.Visibility = narrow && detailFrame.Content is null ? Visibility.Collapsed : Visibility.Visible;
+        };
+        _ = LoadMailboxAsync("Inbox");
+        return root;
+    }
+
+    private static string StripMarkup(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return string.Empty;
+        var text = System.Net.WebUtility.HtmlDecode(
+            System.Text.RegularExpressions.Regex.Replace(value, "<[^>]+>", " "));
+        return System.Text.RegularExpressions.Regex.Replace(text, "\\s+", " ").Trim();
     }
 
     private UIElement BuildGradesPage()
