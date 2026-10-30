@@ -926,8 +926,10 @@ public sealed partial class MainWindow : Window
                 ? new TransitionCollection { new NavigationThemeTransition { DefaultNavigationTransitionInfo = initialTransition } }
                 : null
         };
+        App.WriteStartupLog($"Creating compiled shell page for initial section '{section}'.");
         sectionFrame.Navigate(typeof(SchoologyShellContentPage), content,
             animationsEnabled ? initialTransition : null);
+        App.WriteStartupLog($"Initial Frame.Navigate completed for section '{section}'.");
         _sectionFrame = sectionFrame;
         nav.Content = sectionFrame;
         var items = new (string Name, Symbol Icon)[]
@@ -1582,13 +1584,3 @@ public sealed partial class MainWindow : Window
     }
 }
 
-internal sealed class SchoologyShellContentPage : Page
-{
-    public SchoologyShellContentPage() => NavigationCacheMode = NavigationCacheMode.Disabled;
-
-    protected override void OnNavigatedTo(NavigationEventArgs e)
-    {
-        base.OnNavigatedTo(e);
-        if (e.Parameter is UIElement content) Content = content;
-    }
-}
