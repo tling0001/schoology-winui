@@ -5,8 +5,10 @@
   #define SourceDir "publish\win-x64"
 #endif
 
-#define AppName "Schoology WinUI"
-#define AppVersion "2026.10.0-port.28-net10"
+#define AppName "Schoology"
+#ifndef AppVersion
+  #define AppVersion GetEnv("APP_VERSION")
+#endif
 #define AppExeName "Schoology.WinUI.exe"
 
 [Setup]
@@ -27,7 +29,7 @@ ArchitecturesAllowed=x64 arm64
 CloseApplications=yes
 RestartApplications=no
 Uninstallable=yes
-UninstallDisplayName=Schoology WinUI
+UninstallDisplayName=Schoology
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -39,8 +41,8 @@ Name: "desktopicon"; Description: "Create a Schoology WinUI desktop shortcut"; G
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{group}\Schoology WinUI"; Filename: "{app}\{#AppExeName}"
-Name: "{autodesktop}\Schoology WinUI"; Filename: "{app}\{#AppExeName}"; Tasks: desktopicon
+Name: "{group}\Schoology"; Filename: "{app}\{#AppExeName}"
+Name: "{autodesktop}\Schoology"; Filename: "{app}\{#AppExeName}"; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\{#AppExeName}"; Description: "Launch Schoology WinUI"; Flags: postinstall nowait skipifsilent

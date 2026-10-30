@@ -25,6 +25,11 @@ internal sealed class SchoologyApiClient
         SchoologyAuthService.Session session, CancellationToken cancellationToken = default) =>
         _auth.GetApiJsonAsync(session, "users/me", null, cancellationToken);
 
+    internal Task<JsonDocument> GetUserGradesAsync(
+        SchoologyAuthService.Session session, CancellationToken cancellationToken = default) =>
+        _auth.GetApiJsonAsync(session, $"users/{session.UserId}/grades",
+            new Dictionary<string, string> { ["limit"] = "100" }, cancellationToken);
+
     internal Task<JsonDocument> GetUserAsync(
         SchoologyAuthService.Session session, long userId, CancellationToken cancellationToken = default) =>
         _auth.GetApiJsonAsync(session, $"users/{userId}", null, cancellationToken);
@@ -87,7 +92,7 @@ internal sealed class SchoologyApiClient
     internal Task<JsonDocument> SetUpdateLikeAsync(
         SchoologyAuthService.Session session, long updateId, bool like,
         CancellationToken cancellationToken = default) =>
-        _auth.SendApiJsonAsync(session, HttpMethod.Post, $"like/{updateId}",
+        _auth.SendApiFormAsync(session, HttpMethod.Post, $"like/{updateId}",
             new Dictionary<string, string> { ["like_action"] = like ? "true" : "false" }, cancellationToken);
 
     internal Task<JsonDocument> AddUpdateCommentAsync(
@@ -200,6 +205,30 @@ internal sealed record SchoologyApiRecord(string Title, string Subtitle, JsonEle
 
 internal sealed partial class SchoologyAuthService
 {
+    /// <summary>Execute an OAuth-signed form POST. Schoology's like endpoint
+    /// expects like_action in the request body, matching Android ROLike.</summary>
+    internal async Task<JsonDocument> SendApiFormAsync(
+        Session session, HttpMethod method, string path,
+        IReadOnlyDictionary<string, string> fields,
+        CancellationToken cancellationToken = default)
+    {
+        if (session is null) throw new ArgumentNullException(nameof(session));
+        var normalizedPath = path.TrimStart('/');
+        if (normalizedPath.Length == 0 ||
+            normalizedPath.Split('/').Any(segment => segment is "." or "..") ||
+            normalizedPath.Any(character => !(char.IsAsciiLetterOrDigit(character) || character is '/' or '_' or '-')))
+            throw new InvalidOperationException("The Schoology API path is invalid.");
+        var url = $"https://{ApiHost}/v1/{normalizedPath}";
+        using var response = await SendSignedRequestAsync(method, url,
+            () => new FormUrlEncodedContent(fields), session.Token, session.Secret, null, cancellationToken);
+        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+        if (!response.IsSuccessStatusCode)
+            throw new InvalidOperationException(ReadableError(body, "Schoology could not update this item", response.StatusCode));
+        if (string.IsNullOrWhiteSpace(body)) return JsonDocument.Parse("{}");
+        try { return JsonDocument.Parse(body); }
+        catch (JsonException) { return JsonDocument.Parse("{}"); }
+    }
+
     /// <summary>Execute an OAuth-signed GET against the configured Schoology API host.</summary>
     internal async Task<JsonDocument> GetApiJsonAsync(
         Session session, string path, IReadOnlyDictionary<string, string>? query,

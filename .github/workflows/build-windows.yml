@@ -95,7 +95,8 @@ jobs:
           }
           if (!$iscc) { throw 'Inno Setup compiler was not found in the standard install locations.' }
           $sourceDir = Join-Path $env:GITHUB_WORKSPACE "publish\${{ matrix.rid }}"
-          & $iscc "/DArchitecture=${{ matrix.architecture }}" "/DSourceDir=$sourceDir" "installer\Schoology-WinUI.iss"
+          $version = (Select-Xml -Path "Schoology.WinUI/Schoology.WinUI.csproj" -XPath "//*[local-name()='Version']").Node.InnerText
+          & $iscc "/DArchitecture=${{ matrix.architecture }}" "/DAppVersion=$version" "/DSourceDir=$sourceDir" "installer\Schoology-WinUI.iss"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Upload installer and published files
@@ -107,3 +108,49 @@ jobs:
             publish/${{ matrix.rid }}/**
           if-no-files-found: error
           retention-days: 14
+
+  release:
+    name: Publish versioned Schoology release
+    if: ${{ github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch') }}
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read version and matching release notes
+        id: release_meta
+        shell: bash
+        run: |
+          VERSION="$(python3 -c 'import xml.etree.ElementTree as ET; print(ET.parse("Schoology.WinUI/Schoology.WinUI.csproj").findtext(".//Version"))')"
+          test -n "$VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          python3 - "$VERSION" RELEASE_NOTES.md release-notes.md <<'PY'
+          import sys
+          from pathlib import Path
+          version, source, destination = sys.argv[1:]
+          text = Path(source).read_text(encoding="utf-8")
+          selected = []
+          for section in text.split("## [")[1:]:
+              heading, separator, remainder = section.partition("]")
+              if separator and heading == version:
+                  selected.append("## [" + heading + "]" + remainder)
+          if not selected:
+              raise SystemExit(f"No release notes found for {version}")
+          Path(destination).write_text("\n\n".join(selected).strip() + "\n", encoding="utf-8")
+          PY
+      - name: Download architecture installers
+        uses: actions/download-artifact@v4
+        with:
+          pattern: Schoology-WinUI-*
+          path: release-assets
+          merge-multiple: true
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.release_meta.outputs.version }}
+          name: ${{ steps.release_meta.outputs.version }}
+          target_commitish: main
+          body_path: release-notes.md
+          files: release-assets/**/*.exe
+          overwrite_files: true
+          fail_on_unmatched_files: false
+          generate_release_notes: false
