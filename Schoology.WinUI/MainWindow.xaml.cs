@@ -982,7 +982,7 @@ public sealed partial class MainWindow : Window
     private UIElement BuildApplicationShell(string section, UIElement content)
     {
         var shell = new Grid { Background = ThemeBrush("SchoologySubtleBrush") };
-        shell.RowDefinitions.Add(new RowDefinition { Height = new GridLength(48) });
+        // NavigationView fills the window so its acrylic pane continues behind the custom title bar.
         shell.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
 
         var nativeTitleBar = AppWindow.TitleBar;
@@ -1015,8 +1015,6 @@ public sealed partial class MainWindow : Window
         commands.Children.Add(createButton);
         Grid.SetColumn(commands, 3);
         titleBar.Children.Add(commands);
-        shell.Children.Add(titleBar);
-        SetTitleBar(caption);
         // AppWindowTitleBar exposes inset values, not a Changed event.
         titleBar.Padding = new Thickness(16, 0, Math.Max(12, nativeTitleBar.RightInset + 12), 0);
 
@@ -1035,10 +1033,24 @@ public sealed partial class MainWindow : Window
             Background = new SolidColorBrush(Colors.Transparent),
             Content = null
         };
-        // WinUI 3 styles the NavigationView pane through theme resources rather than a PaneBackground property.
-        // Keep the NavigationView pane transparent so the Window Mica material
-        // remains visible in both compact and expanded states.
-        var paneMaterial = new SolidColorBrush(Colors.Transparent);
+        // Give the pane a legible in-app acrylic surface. Transparent pane brushes
+        // expose the page beneath and make navigation labels difficult to read.
+        var darkPane = _root.ActualTheme == ElementTheme.Dark;
+        var paneMaterial = new AcrylicBrush
+        {
+            TintColor = darkPane
+                ? Microsoft.UI.ColorHelper.FromArgb(255, 28, 34, 40)
+                : Microsoft.UI.ColorHelper.FromArgb(255, 238, 244, 249),
+            TintOpacity = darkPane ? 0.86 : 0.82,
+            FallbackColor = darkPane
+                ? Microsoft.UI.ColorHelper.FromArgb(255, 32, 38, 44)
+                : Microsoft.UI.ColorHelper.FromArgb(255, 245, 248, 251)
+        };
+        nav.PaneHeader = new Border
+        {
+            Height = 48,
+            Background = new SolidColorBrush(Colors.Transparent)
+        };
         nav.Resources["NavigationViewDefaultPaneBackground"] = paneMaterial;
         nav.Resources["NavigationViewExpandedPaneBackground"] = paneMaterial;
         nav.Resources["NavigationViewCompactPaneBackground"] = paneMaterial;
@@ -1065,6 +1077,7 @@ public sealed partial class MainWindow : Window
         var sectionFrame = new Frame
         {
             Background = new SolidColorBrush(Colors.Transparent),
+            Margin = new Thickness(0, 48, 0, 0),
             ContentTransitions = animationsEnabled
                 ? new TransitionCollection { new NavigationThemeTransition { DefaultNavigationTransitionInfo = initialTransition } }
                 : null
@@ -1106,7 +1119,8 @@ public sealed partial class MainWindow : Window
             if (entry.Name == "Home")
                 nav.MenuItems.Add(new NavigationViewItemSeparator());
             var item = new NavigationViewItem { Content = entry.Name == "Upcoming" ? "Calendar" : entry.Name, Tag = entry.Name, Icon = new SymbolIcon(entry.Icon) };
-            item.SelectsOnInvoked = true;
+            // Parent rows only expand/collapse. Selecting a specific child performs navigation.
+            item.SelectsOnInvoked = entry.Name is not ("Courses" or "Groups");
             if (entry.Name is "Courses" or "Groups") item.IsExpanded = false;
             nav.MenuItems.Add(item);
             if (entry.Name == (section == "Recent Activity" ? "Home" : section)) nav.SelectedItem = item;
@@ -1136,8 +1150,12 @@ public sealed partial class MainWindow : Window
             else ShowHome(rootTarget == "Home" ? "Recent Activity" : rootTarget);
         };
         _appNavigation = nav;
-        Grid.SetRow(nav, 1);
+        Grid.SetRow(nav, 0);
         shell.Children.Add(nav);
+        // Draw the custom title bar above NavigationView while retaining a 48px
+        // header reservation in both the pane and content area.
+        shell.Children.Add(titleBar);
+        SetTitleBar(titleBar);
         return shell;
     }
 
@@ -1209,7 +1227,7 @@ public sealed partial class MainWindow : Window
         {
             if (parent.Tag is not string tag || tag is not ("Courses" or "Groups")) continue;
             parent.MenuItems.Clear();
-            parent.SelectsOnInvoked = true;
+            parent.SelectsOnInvoked = false;
             var entities = tag == "Groups" ? _groups : _courses;
             foreach (var entity in entities)
             {
@@ -1460,19 +1478,9 @@ public sealed partial class MainWindow : Window
             try { hero.Child = new Image { Source = new BitmapImage(new Uri(NormalizeSchoologyImageUrl(selected.ImageUrl))),
                 Stretch = Microsoft.UI.Xaml.Media.Stretch.UniformToFill }; } catch { }
         }
+        // Landscape keeps the left rail image-only. Course/group/school details
+        // belong in the infobox above the selected tab's content.
         identity.Children.Add(hero);
-        identity.Children.Add(Text(entityName, 17, true));
-        if (!string.IsNullOrWhiteSpace(selected?.Subtitle)) identity.Children.Add(Text(selected.Subtitle, 12));
-        if (kind == "Courses" && selected is not null)
-        {
-            var schoolName = ProfileValue(selected.Data, "school_title", "school_name", "school");
-            if (!string.IsNullOrWhiteSpace(schoolName))
-            {
-                var school = Text(schoolName, 12);
-                school.Foreground = ThemeBrush("SchoologyBlueBrush");
-                identity.Children.Add(school);
-            }
-        }
         sidebar.Children.Add(identity);
 
         var detail = new Frame { Background = new SolidColorBrush(Colors.Transparent) };
@@ -1547,11 +1555,12 @@ public sealed partial class MainWindow : Window
         compactLabels.Children.Add(Text(kind == "Courses" ? "Course" :
             kind == "Groups" ? "Group" : "School profile", 12));
         Grid.SetColumn(compactLabels, 1); compactIdentity.Children.Add(compactLabels);
-        Grid.SetRow(compactIdentity, 0); narrow.Children.Add(compactIdentity);
         var compactSelector = new SelectorBar { HorizontalAlignment = HorizontalAlignment.Stretch };
         foreach (var tab in tabs.Concat(["Upcoming"]))
             compactSelector.Items.Add(new SelectorBarItem { Text = tab });
-        Grid.SetRow(compactSelector, 1); narrow.Children.Add(compactSelector);
+        // In portrait the tab selector precedes the entity infobox.
+        Grid.SetRow(compactSelector, 0); narrow.Children.Add(compactSelector);
+        Grid.SetRow(compactIdentity, 1); narrow.Children.Add(compactIdentity);
         var compactFrame = new Frame { Background = new SolidColorBrush(Colors.Transparent) };
         Grid.SetRow(compactFrame, 2); narrow.Children.Add(compactFrame);
 
@@ -1559,9 +1568,9 @@ public sealed partial class MainWindow : Window
         {
             if (entityId <= 0) return;
             NavigateShellFrame(detail, tab == "Upcoming" ? BuildUpcomingContent() :
-                BuildEntityTabContent(kind, entityId, entityName, tab), SlideNavigationTransitionEffect.FromRight);
+                BuildEntityTabContent(kind, entityId, entityName, tab, selected), SlideNavigationTransitionEffect.FromRight);
             NavigateShellFrame(compactFrame, tab == "Upcoming" ? BuildUpcomingContent() :
-                BuildEntityTabContent(kind, entityId, entityName, tab), SlideNavigationTransitionEffect.FromRight);
+                BuildEntityTabContent(kind, entityId, entityName, tab, selected), SlideNavigationTransitionEffect.FromRight);
         }
         navigation.ItemClick += (_, args) =>
         {
@@ -1599,13 +1608,28 @@ public sealed partial class MainWindow : Window
         frame.Navigate(typeof(SchoologyShellContentPage), content, animationsEnabled ? transition : null);
     }
 
-    private UIElement BuildEntityTabContent(string kind, long entityId, string entity, string tab)
+    private UIElement BuildEntityTabContent(string kind, long entityId, string entity, string tab, SchoologyEntity? entityInfo = null)
     {
         var layout = new Grid { RowSpacing = 8, Margin = new Thickness(8) };
         layout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         layout.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-        var heading = new StackPanel { Spacing = 4 };
-        heading.Children.Add(Text(entity, 23, true)); heading.Children.Add(Text(tab, 17, true));
+        var heading = new StackPanel { Spacing = 8 };
+        var infobox = new StackPanel { Spacing = 4 };
+        infobox.Children.Add(Text(entity, 20, true));
+        if (!string.IsNullOrWhiteSpace(entityInfo?.Subtitle))
+            infobox.Children.Add(Text(entityInfo.Subtitle, 12));
+        if (kind == "Courses" && entityInfo is not null)
+        {
+            var schoolName = ProfileValue(entityInfo.Data, "school_title", "school_name", "school");
+            if (!string.IsNullOrWhiteSpace(schoolName))
+            {
+                var school = Text(schoolName, 12);
+                school.Foreground = ThemeBrush("SchoologyBlueBrush");
+                infobox.Children.Add(school);
+            }
+        }
+        heading.Children.Add(Surface(infobox, new Thickness(12)));
+        heading.Children.Add(Text(tab, 17, true));
         Grid.SetRow(heading, 0); layout.Children.Add(heading);
         var body = new StackPanel { Spacing = 14 };
         var scroll = new ScrollViewer { VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
@@ -1701,8 +1725,10 @@ public sealed partial class MainWindow : Window
             Render(previous.Records);
             breadcrumb.Text = previous.Title;
             back.IsEnabled = history.Count > 0;
+            back.Visibility = history.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
         });
         back.IsEnabled = false;
+        back.Visibility = Visibility.Collapsed;
         void Render(IReadOnlyList<SchoologyApiRecord> records)
         {
             current = records;
@@ -1737,6 +1763,7 @@ public sealed partial class MainWindow : Window
                 history.Push((current.ToArray(), breadcrumb.Text));
                 breadcrumb.Text = ProfileValue(record.Data, "title", "name") ?? record.Title;
                 back.IsEnabled = true;
+                back.Visibility = Visibility.Visible;
                 Render(records);
                 if (records.Count == 0) list.Items.Add(new ListViewItem { Content = Text("This folder is empty.", 13) });
             }
