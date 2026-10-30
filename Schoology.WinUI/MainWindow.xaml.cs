@@ -8,6 +8,7 @@ using Microsoft.UI.Xaml.Navigation;
 using Microsoft.UI.Xaml.Media.Animation;
 using System.Web;
 using System.Text;
+using System.Collections.ObjectModel;
 using Windows.Media.Playback;
 using System.Runtime.InteropServices;
 using Windows.Graphics;
@@ -27,13 +28,17 @@ public sealed partial class MainWindow : Window
     private string _section = "Recent Activity";
     private NavigationView? _appNavigation;
     private SplitView? _homeSplitView;
+    private Frame? _sectionFrame;
+    private ListView? _entityListView;
     private string _selectedEntity = string.Empty;
+    private long _selectedEntityId;
     private readonly SchoologyAuthService _auth = new(false);
+    private readonly SchoologyApiClient _api;
+    private readonly ObservableCollection<SchoologyEntity> _courses = new();
+    private readonly ObservableCollection<SchoologyEntity> _groups = new();
     private SchoologyAuthService.Session? _session;
     private QrCameraScanner? _qrScanner;
     private MediaPlayer? _qrPlayer;
-    private readonly List<string> _courses = ["English Language Arts", "Algebra II", "Biology", "World History", "Computer Science"];
-    private readonly List<string> _groups = ["Robotics Club", "Student Council", "Yearbook"];
 
     public MainWindow()
     {
@@ -42,8 +47,11 @@ public sealed partial class MainWindow : Window
         App.WriteStartupLog("MainWindow.InitializeComponent completed.");
 
         _root = Root;
+        _api = new SchoologyApiClient(_auth);
         Title = "Schoology";
         ExtendsContentIntoTitleBar = true;
+        AppWindow.TitleBar.ExtendsContentIntoTitleBar = true;
+        try { AppWindow.TitleBar.PreferredHeightOption = TitleBarHeightOption.Tall; } catch { }
         AppWindow.TitleBar.ButtonBackgroundColor = Colors.Transparent;
         AppWindow.TitleBar.ButtonInactiveBackgroundColor = Colors.Transparent;
         try { SystemBackdrop = new MicaBackdrop(); } catch { }
@@ -264,6 +272,8 @@ public sealed partial class MainWindow : Window
     private void ShowLogin()
     {
         _page = "login";
+        _sectionFrame = null;
+        _entityListView = null;
         _ = StopQrScannerAsync();
         var dark = _root.ActualTheme == ElementTheme.Dark;
         var scroll = new ScrollViewer
@@ -624,6 +634,7 @@ public sealed partial class MainWindow : Window
                 _session = await _auth.SignInAsync(username.Text, password.Password, null);
                 password.Password = string.Empty;
                 ShowHome();
+                _ = LoadAccountCollectionsAsync();
             }
             catch (Exception ex) { status.Text = ex.Message; signIn.IsEnabled = true; }
         };
@@ -666,6 +677,7 @@ public sealed partial class MainWindow : Window
                     status.Text = "Verifying your Schoology account…";
                     _session = await _auth.CompleteSchoolBrowserSignInAsync(requestToken);
                     ShowHome();
+                    _ = LoadAccountCollectionsAsync();
                 }
                 catch (Exception ex)
                 {
@@ -736,6 +748,8 @@ public sealed partial class MainWindow : Window
             await StopQrScannerAsync();
             _session = await _auth.SignInWithQrAsync(qr);
             ShowHome();
+            _ = LoadAccountCollectionsAsync();
+            _ = LoadAccountCollectionsAsync();
         }
         catch (Exception ex)
         {
@@ -799,6 +813,7 @@ public sealed partial class MainWindow : Window
             if (restored is null || _page != "login") return;
             _session = restored;
             ShowHome();
+            _ = LoadAccountCollectionsAsync();
         }
         catch (Exception ex) { App.WriteStartupLog("Saved Schoology session restoration failed.", ex); }
     }
@@ -821,7 +836,13 @@ public sealed partial class MainWindow : Window
         shell.RowDefinitions.Add(new RowDefinition { Height = new GridLength(48) });
         shell.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
 
-        var titleBar = new Grid { Background = new SolidColorBrush(Colors.Transparent), Padding = new Thickness(16, 0, 12, 0) };
+        var nativeTitleBar = AppWindow.TitleBar;
+        var titleBar = new Grid
+        {
+            Background = new SolidColorBrush(Colors.Transparent),
+            Padding = new Thickness(16, 0, Math.Max(12, nativeTitleBar.RightInset + 12), 0),
+            MinHeight = 48
+        };
         titleBar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         titleBar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         titleBar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -834,12 +855,20 @@ public sealed partial class MainWindow : Window
         Grid.SetColumn(caption, 1);
         titleBar.Children.Add(caption);
         var commands = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, VerticalAlignment = VerticalAlignment.Center };
-        commands.Children.Add(Action("Search", (_, _) => ShowSearch()));
-        commands.Children.Add(Action("＋ Create", (_, _) => ShowCreateMenu(), true));
+        var searchButton = Action("Search", (_, _) => ShowSearch());
+        AutomationProperties.SetAutomationId(searchButton, "TitleBarSearchButton");
+        var createButton = Action("＋ Create", (_, _) => ShowCreateMenu(), true);
+        AutomationProperties.SetAutomationId(createButton, "TitleBarCreateButton");
+        commands.Children.Add(searchButton);
+        commands.Children.Add(createButton);
         Grid.SetColumn(commands, 2);
         titleBar.Children.Add(commands);
         shell.Children.Add(titleBar);
         SetTitleBar(titleBar);
+        nativeTitleBar.Changed += (_, _) =>
+        {
+            titleBar.Padding = new Thickness(16, 0, Math.Max(12, nativeTitleBar.RightInset + 12), 0);
+        };
 
         var nav = new NavigationView
         {
@@ -853,13 +882,26 @@ public sealed partial class MainWindow : Window
             CompactModeThresholdWidth = 760,
             ExpandedModeThresholdWidth = 1120,
             Background = new SolidColorBrush(Colors.Transparent),
-            Content = content
+            Content = null
         };
+        var animationsEnabled = new UISettings().AnimationsEnabled;
+        var initialTransition = new SlideNavigationTransitionInfo { Effect = SlideNavigationTransitionEffect.FromRight };
+        var sectionFrame = new Frame
+        {
+            Background = new SolidColorBrush(Colors.Transparent),
+            ContentTransitions = animationsEnabled
+                ? new TransitionCollection { new NavigationThemeTransition { DefaultNavigationTransitionInfo = initialTransition } }
+                : null
+        };
+        sectionFrame.Navigate(typeof(SchoologyShellContentPage), content,
+            animationsEnabled ? initialTransition : null);
+        _sectionFrame = sectionFrame;
+        nav.Content = sectionFrame;
         var items = new (string Name, Symbol Icon)[]
         {
             ("Home", Symbol.Home), ("Upcoming", Symbol.Calendar), ("Courses", Symbol.Library),
             ("Groups", Symbol.People), ("School Profile", Symbol.Home), ("Messages", Symbol.Mail),
-            ("Grades", Symbol.Page), ("Resources", Symbol.Folder)
+            ("Grades", Symbol.Page), ("Resources", Symbol.Folder), ("Profile", Symbol.Contact)
         };
         foreach (var entry in items)
         {
@@ -876,11 +918,8 @@ public sealed partial class MainWindow : Window
         nav.SelectionChanged += (_, args) =>
         {
             if (args.SelectedItem is not NavigationViewItem item || item.Tag is not string target) return;
-            if (target == "Sign out") { _auth.SignOut(); _session = null; ShowLogin(); }
-            else if (target == "Home") ShowHome();
-            else if (target == "Upcoming") ShowUpcoming();
-            else if (target is "Courses" or "Groups" or "School Profile") ShowThreePane(target);
-            else ShowHome(target);
+            if (target == "Sign out") { _auth.SignOut(); _session = null; _sectionFrame = null; ShowLogin(); }
+            else ShowHome(target == "Home" ? "Recent Activity" : target);
         };
         _appNavigation = nav;
         Grid.SetRow(nav, 1);
@@ -897,6 +936,12 @@ public sealed partial class MainWindow : Window
         UIElement page;
         if (section is "Upcoming" or "Recent Activity" or "Home")
             page = BuildHomeSplitView(section == "Upcoming");
+        else if (section == "Messages")
+            page = BuildMessagesPage();
+        else if (section == "Grades")
+            page = BuildGradesPage();
+        else if (section == "Profile")
+            page = BuildProfilePage();
         else
         {
             var panel = new StackPanel { Spacing = 12, Margin = new Thickness(24) };
@@ -904,7 +949,41 @@ public sealed partial class MainWindow : Window
             panel.Children.Add(Surface(Text($"The {section.ToLowerInvariant()} view is ready for its Schoology data provider. No sample records are presented as live account data.")));
             page = panel;
         }
-        Reset(BuildApplicationShell(section, page));
+        if (_sectionFrame is not null)
+            NavigateMainSection(page, section);
+        else
+            Reset(BuildApplicationShell(section, page));
+    }
+
+    private void NavigateMainSection(UIElement page, string section)
+    {
+        if (_sectionFrame is null) return;
+        var effect = section is "Home" or "Recent Activity" ? SlideNavigationTransitionEffect.FromLeft : SlideNavigationTransitionEffect.FromRight;
+        var info = new SlideNavigationTransitionInfo { Effect = effect };
+        var animationsEnabled = new UISettings().AnimationsEnabled;
+        _sectionFrame.ContentTransitions = animationsEnabled
+            ? new TransitionCollection { new NavigationThemeTransition { DefaultNavigationTransitionInfo = info } }
+            : null;
+        _sectionFrame.Navigate(typeof(SchoologyShellContentPage), page, animationsEnabled ? info : null);
+    }
+
+    private async Task LoadAccountCollectionsAsync()
+    {
+        var session = _session;
+        if (session is null) return;
+        try
+        {
+            var results = await Task.WhenAll(_api.GetCoursesAsync(session), _api.GetGroupsAsync(session));
+            _courses.Clear();
+            foreach (var item in results[0]) _courses.Add(item);
+            _groups.Clear();
+            foreach (var item in results[1]) _groups.Add(item);
+            App.WriteStartupLog($"Loaded Schoology account collections: {_courses.Count} courses, {_groups.Count} groups.");
+        }
+        catch (Exception ex)
+        {
+            App.WriteStartupLog("Could not load Schoology account collections.", ex);
+        }
     }
 
     private UIElement BuildHomeSplitView(bool upcomingFirst)
@@ -992,7 +1071,21 @@ public sealed partial class MainWindow : Window
         _page = kind;
         _section = kind;
         _selectedEntity = string.Empty;
-        Reset(BuildApplicationShell(kind, BuildThreePane(kind)));
+        _selectedEntityId = 0;
+        var page = BuildThreePane(kind);
+        if (_sectionFrame is not null)
+            NavigateMainSection(page, kind);
+        else
+            Reset(BuildApplicationShell(kind, page));
+    }
+
+    private IEnumerable<SchoologyEntity> GetSchoolProfileEntities()
+    {
+        if (_session is null) return Array.Empty<SchoologyEntity>();
+        var schoolId = ProfileValue(_session.User, "school_id", "schoolId");
+        if (!long.TryParse(schoolId, out var id) || id <= 0) return Array.Empty<SchoologyEntity>();
+        var schoolName = ProfileValue(_session.User, "school_title", "school_name", "school") ?? "My School";
+        return new[] { new SchoologyEntity(id, schoolName, string.Empty, null, _session.User.Clone()) };
     }
 
     private UIElement BuildThreePane(string kind)
@@ -1006,14 +1099,15 @@ public sealed partial class MainWindow : Window
             PanePlacement = SplitViewPanePlacement.Left,
             Background = new SolidColorBrush(Colors.Transparent)
         };
-        var entries = kind == "Courses" ? _courses : kind == "Groups" ? _groups :
-            new List<string> { "School updates", "Events", "Staff directory" };
+        IEnumerable<SchoologyEntity> entries = kind == "Courses" ? _courses :
+            kind == "Groups" ? _groups : GetSchoolProfileEntities();
         var master = new StackPanel { Spacing = 8, Margin = new Thickness(16) };
         master.Children.Add(Text(kind == "School Profile" ? "School" : $"My {kind}", 20, true));
         master.Children.Add(new TextBox { PlaceholderText = $"Search {kind.ToLowerInvariant()}", Margin = new Thickness(0, 4, 0, 8) });
         var selectedName = Text("Select an item", 14, true);
         var selector = new SelectorBar { Margin = new Thickness(0, 0, 0, 12) };
-        var tabs = kind == "School Profile" ? new[] { "Updates", "Events", "Staff" } :
+        var tabs = kind == "School Profile" ? new[] { "Updates", "Info", "Upcoming", "Resources", "Discussions" } :
+            kind == "Groups" ? new[] { "Updates", "Members", "Upcoming", "Discussions", "Resources" } :
             new[] { "Updates", "Materials", "Grades", "Members", "Discussions" };
         foreach (var tab in tabs) selector.Items.Add(new SelectorBarItem { Text = tab });
         var detail = new Frame
@@ -1029,22 +1123,30 @@ public sealed partial class MainWindow : Window
         };
         selector.SelectionChanged += (_, _) =>
         {
-            if (selector.SelectedItem is SelectorBarItem selected && !string.IsNullOrEmpty(_selectedEntity))
-                NavigateShellFrame(detail, BuildEntityTabContent(kind, _selectedEntity, selected.Text), SlideNavigationTransitionEffect.FromRight);
+            if (selector.SelectedItem is SelectorBarItem selected && _selectedEntityId > 0)
+                NavigateShellFrame(detail, BuildEntityTabContent(kind, _selectedEntityId, _selectedEntity, selected.Text), SlideNavigationTransitionEffect.FromRight);
         };
         var center = new StackPanel { Spacing = 8, Margin = new Thickness(16) };
         center.Children.Add(selectedName);
         center.Children.Add(selector);
-        var entityList = new ListView { SelectionMode = ListViewSelectionMode.Single, IsItemClickEnabled = true,
-            ItemsSource = entries, HorizontalContentAlignment = HorizontalAlignment.Stretch };
+        var entityList = new ListView
+        {
+            SelectionMode = ListViewSelectionMode.Single,
+            IsItemClickEnabled = true,
+            ItemsSource = entries,
+            DisplayMemberPath = nameof(SchoologyEntity.Name),
+            HorizontalContentAlignment = HorizontalAlignment.Stretch
+        };
+        AutomationProperties.SetAutomationId(entityList, kind + "EntityList");
+        _entityListView = entityList;
         entityList.ItemClick += (_, args) =>
         {
-            if (args.ClickedItem is not string entity) return;
-            _selectedEntity = entity;
-            selectedName.Text = entity;
+            if (args.ClickedItem is not SchoologyEntity entity) return;
+            _selectedEntity = entity.Name;
+            _selectedEntityId = entity.Id;
+            selectedName.Text = entity.Name;
+            selector.SelectedItem = null;
             selector.SelectedItem = selector.Items.FirstOrDefault();
-            if (selector.SelectedItem is SelectorBarItem first)
-                NavigateShellFrame(detail, BuildEntityTabContent(kind, entity, first.Text), SlideNavigationTransitionEffect.FromRight);
         };
         master.Children.Add(entityList);
         split.Pane = new ScrollViewer { Content = master, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
@@ -1070,16 +1172,203 @@ public sealed partial class MainWindow : Window
 
     private void NavigateShellFrame(Frame frame, UIElement content, SlideNavigationTransitionEffect effect)
     {
-        frame.Navigate(typeof(SchoologyShellContentPage), content, new SlideNavigationTransitionInfo { Effect = effect });
+        var animationsEnabled = new UISettings().AnimationsEnabled;
+        var transition = new SlideNavigationTransitionInfo { Effect = effect };
+        frame.ContentTransitions = animationsEnabled
+            ? new TransitionCollection { new NavigationThemeTransition { DefaultNavigationTransitionInfo = transition } }
+            : null;
+        frame.Navigate(typeof(SchoologyShellContentPage), content, animationsEnabled ? transition : null);
     }
 
-    private UIElement BuildEntityTabContent(string kind, string entity, string tab)
+    private UIElement BuildEntityTabContent(string kind, long entityId, string entity, string tab)
     {
         var body = new StackPanel { Spacing = 14, Margin = new Thickness(8) };
         body.Children.Add(Text(entity, 23, true));
         body.Children.Add(Text(tab, 17, true));
-        body.Children.Add(Surface(Text($"The {tab.ToLowerInvariant()} feed for this {kind.ToLowerInvariant().TrimEnd('s')} will be populated by the native Schoology data layer. This shell does not substitute sample records for account data.")));
+        var status = Text("Loading from Schoology…", 13);
+        status.Foreground = ThemeBrush("SchoologyMutedTextBrush");
+        body.Children.Add(status);
+        _ = LoadEntityTabAsync(kind, entityId, tab, body, status);
         return body;
+    }
+
+    private async Task LoadEntityTabAsync(string kind, long entityId, string tab, StackPanel body, TextBlock status)
+    {
+        try
+        {
+            var session = _session;
+            if (session is null || entityId <= 0) throw new InvalidOperationException("Select a Schoology item after signing in.");
+            using var document = await _api.GetEntityTabAsync(session, kind, entityId, tab);
+            if (kind == "School Profile" && tab == "Info")
+            {
+                body.Children.Remove(status);
+                var school = document.RootElement;
+                AddProfileField(body, "Address", string.Join(" ", new[]
+                {
+                    ProfileValue(school, "address1"), ProfileValue(school, "address2"),
+                    ProfileValue(school, "city"), ProfileValue(school, "state"),
+                    ProfileValue(school, "postal_code"), ProfileValue(school, "country")
+                }.Where(value => !string.IsNullOrWhiteSpace(value))));
+                AddProfileField(body, "Phone", ProfileValue(school, "phone"));
+                if (body.Children.Count <= 2) body.Children.Add(Surface(Text("No additional school information was returned.")));
+                return;
+            }
+            var records = SchoologyApiClient.ReadRecords(document.RootElement);
+            body.Children.Remove(status);
+            if (records.Count == 0)
+            {
+                body.Children.Add(Surface(Text($"No {tab.ToLowerInvariant()} were returned by Schoology.")));
+                return;
+            }
+            foreach (var record in records)
+            {
+                var item = new StackPanel { Spacing = 4 };
+                item.Children.Add(Text(record.Title, 15, true));
+                if (!string.IsNullOrWhiteSpace(record.Subtitle))
+                    item.Children.Add(Text(record.Subtitle, 12));
+                body.Children.Add(Surface(item));
+            }
+        }
+        catch (Exception ex)
+        {
+            status.Text = $"Unable to load {tab.ToLowerInvariant()}: {ex.Message}";
+        }
+    }
+
+    private UIElement BuildMessagesPage()
+    {
+        var panel = new StackPanel { Spacing = 12, Margin = new Thickness(24) };
+        panel.Children.Add(Text("Messages", 24, true));
+        var folders = new SelectorBar();
+        folders.Items.Add(new SelectorBarItem { Text = "Inbox" });
+        folders.Items.Add(new SelectorBarItem { Text = "Sent" });
+        folders.SelectedItem = folders.Items[0];
+        panel.Children.Add(folders);
+        var status = Text("Loading messages…", 13);
+        panel.Children.Add(status);
+        var list = new ListView { SelectionMode = ListViewSelectionMode.Single, IsItemClickEnabled = true };
+        AutomationProperties.SetAutomationId(list, "SchoologyMessagesList");
+        panel.Children.Add(list);
+        async Task LoadFolderAsync(bool sent)
+        {
+            try
+            {
+                if (_session is null) throw new InvalidOperationException("Sign in to view messages.");
+                status.Text = sent ? "Loading sent messages…" : "Loading inbox…";
+                using var document = await _api.GetMessagesAsync(_session, sent);
+                var rows = SchoologyApiClient.ReadRecords(document.RootElement);
+                list.ItemsSource = rows;
+                list.DisplayMemberPath = nameof(SchoologyApiRecord.Title);
+                status.Text = rows.Count == 0 ? (sent ? "No sent messages." : "Your inbox is empty.") : $"{rows.Count} messages";
+            }
+            catch (Exception ex) { status.Text = $"Unable to load messages: {ex.Message}"; }
+        }
+        folders.SelectionChanged += (_, _) => _ = LoadFolderAsync(folders.SelectedItem == folders.Items[1]);
+        list.ItemClick += async (_, args) =>
+        {
+            if (args.ClickedItem is not SchoologyApiRecord message) return;
+            var dialog = new ContentDialog
+            {
+                Title = message.Title,
+                Content = message.Subtitle,
+                CloseButtonText = "Close",
+                XamlRoot = _root.XamlRoot
+            };
+            await dialog.ShowAsync();
+        };
+        _ = LoadFolderAsync(false);
+        return panel;
+    }
+
+    private UIElement BuildGradesPage()
+    {
+        var panel = new StackPanel { Spacing = 12, Margin = new Thickness(24) };
+        panel.Children.Add(Text("Grades", 24, true));
+        panel.Children.Add(Text("Choose a course to view its current Schoology gradebook.", 13));
+        var list = new ListView
+        {
+            ItemsSource = _courses,
+            DisplayMemberPath = nameof(SchoologyEntity.Name),
+            SelectionMode = ListViewSelectionMode.Single,
+            IsItemClickEnabled = true
+        };
+        AutomationProperties.SetAutomationId(list, "SchoologyGradesCourseList");
+        var details = new StackPanel { Spacing = 8 };
+        list.ItemClick += async (_, args) =>
+        {
+            if (args.ClickedItem is not SchoologyEntity course || _session is null) return;
+            details.Children.Clear();
+            details.Children.Add(Text($"Loading grades for {course.Name}…", 13));
+            try
+            {
+                using var document = await _api.GetEntityTabAsync(_session, "Courses", course.Id, "Grades");
+                var records = SchoologyApiClient.ReadRecords(document.RootElement);
+                details.Children.Clear();
+                if (records.Count == 0) details.Children.Add(Text("Schoology returned no grade rows for this course.", 13));
+                foreach (var grade in records)
+                {
+                    var row = new StackPanel { Spacing = 3 };
+                    row.Children.Add(Text(grade.Title, 14, true));
+                    if (!string.IsNullOrWhiteSpace(grade.Subtitle)) row.Children.Add(Text(grade.Subtitle, 12));
+                    details.Children.Add(Surface(row));
+                }
+            }
+            catch (Exception ex)
+            {
+                details.Children.Clear();
+                details.Children.Add(Text($"Unable to load grades: {ex.Message}", 13));
+            }
+        };
+        panel.Children.Add(list);
+        panel.Children.Add(details);
+        return panel;
+    }
+
+    private UIElement BuildProfilePage()
+    {
+        var panel = new StackPanel { Spacing = 12, Margin = new Thickness(24) };
+        panel.Children.Add(Text("My Profile", 24, true));
+        var status = Text("Loading your Schoology profile…", 13);
+        panel.Children.Add(status);
+        _ = LoadProfileAsync(panel, status);
+        return panel;
+    }
+
+    private async Task LoadProfileAsync(StackPanel panel, TextBlock status)
+    {
+        try
+        {
+            if (_session is null) throw new InvalidOperationException("Sign in to view your profile.");
+            using var document = await _api.GetProfileAsync(_session);
+            var user = document.RootElement;
+            panel.Children.Remove(status);
+            var name = ProfileValue(user, "name_display", "nameDisplay", "display_name", "name") ?? "Schoology user";
+            panel.Children.Add(Surface(Text(name, 20, true)));
+            AddProfileField(panel, "Username", ProfileValue(user, "username"));
+            AddProfileField(panel, "Email", ProfileValue(user, "primary_email", "email"));
+            AddProfileField(panel, "School", ProfileValue(user, "school_title", "school_name"));
+            AddProfileField(panel, "User ID", ProfileValue(user, "id"));
+        }
+        catch (Exception ex) { status.Text = $"Unable to load profile: {ex.Message}"; }
+    }
+
+    private void AddProfileField(StackPanel panel, string label, string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return;
+        var row = new StackPanel { Spacing = 3 };
+        row.Children.Add(Text(label, 12, true));
+        row.Children.Add(Text(value, 14));
+        panel.Children.Add(Surface(row));
+    }
+
+    private static string? ProfileValue(System.Text.Json.JsonElement user, params string[] keys)
+    {
+        if (user.ValueKind != System.Text.Json.JsonValueKind.Object) return null;
+        foreach (var key in keys)
+            if (user.TryGetProperty(key, out var value) &&
+                value.ValueKind is System.Text.Json.JsonValueKind.String or System.Text.Json.JsonValueKind.Number)
+                return value.ToString();
+        return null;
     }
 
     private void ShowSearch()
@@ -1087,9 +1376,11 @@ public sealed partial class MainWindow : Window
         _page = "Search";
         var panel = new StackPanel { Spacing = 12, Margin = new Thickness(24) };
         panel.Children.Add(Text("Search Schoology", 22, true));
-        panel.Children.Add(new AutoSuggestBox { PlaceholderText = "Search courses, groups, people, and updates" });
+        var searchBox = new AutoSuggestBox { PlaceholderText = "Search courses, groups, people, and updates" };
+        panel.Children.Add(searchBox);
         panel.Children.Add(Action("Back", (_, _) => ShowHome()));
-        Reset(BuildApplicationShell("Recent Activity", panel));
+        if (_sectionFrame is not null) NavigateMainSection(panel, "Search");
+        else Reset(BuildApplicationShell("Recent Activity", panel));
     }
     private async void ShowCreateMenu()
     {

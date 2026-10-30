@@ -9,7 +9,7 @@ namespace Schoology.WinUI;
 
 /// <summary>Schoology OAuth 1.0a login and protected local session storage.
 /// Protocol details mirror the supplied official Schoology 2026.10.0 port.28 source.</summary>
-internal sealed class SchoologyAuthService
+internal sealed partial class SchoologyAuthService
 {
     private const string ConsumerKey = "998121f221d5dc0f4956ee6946d27d5e04e55635e";
     private const string ConsumerSecret = "5cff9d3780d64695d762ba8e05a34e9e";
