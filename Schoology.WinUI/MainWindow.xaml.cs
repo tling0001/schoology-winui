@@ -1266,56 +1266,85 @@ public sealed partial class MainWindow : Window
 
     private UIElement BuildHomeSplitView(bool upcomingFirst)
     {
-        var split = new SplitView
+        // Landscape mirrors the classic port's two-pane home proportions.
+        // Portrait changes the task model to a single content surface with
+        // Upcoming promoted into the SelectorBar instead of an overlay pane.
+        var root = new Grid { Background = new SolidColorBrush(Colors.Transparent) };
+        var wide = new Grid { ColumnSpacing = 0 };
+        wide.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(2, GridUnitType.Star) });
+        wide.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        var wideLeft = new Grid { Margin = new Thickness(20, 14, 12, 16), RowSpacing = 12 };
+        wideLeft.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        wideLeft.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        wideLeft.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        wideLeft.Children.Add(Text("Home", 23, true));
+        var wideSelector = new SelectorBar { HorizontalAlignment = HorizontalAlignment.Left };
+        var wideRecent = new SelectorBarItem { Text = "Recent Activity" };
+        var wideDashboard = new SelectorBarItem { Text = "Course Dashboard" };
+        wideSelector.Items.Add(wideRecent);
+        wideSelector.Items.Add(wideDashboard);
+        Grid.SetRow(wideSelector, 1); wideLeft.Children.Add(wideSelector);
+        var wideFrame = new Frame { Background = new SolidColorBrush(Colors.Transparent) };
+        Grid.SetRow(wideFrame, 2); wideLeft.Children.Add(wideFrame);
+        wideSelector.SelectionChanged += (_, _) =>
         {
-            DisplayMode = SplitViewDisplayMode.Inline, IsPaneOpen = true, OpenPaneLength = 620,
-            CompactPaneLength = 0, PanePlacement = SplitViewPanePlacement.Left,
-            Background = new SolidColorBrush(Colors.Transparent)
-        };
-        var left = new Grid { Margin = new Thickness(20, 14, 12, 16), RowSpacing = 12 };
-        left.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        left.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        left.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-        var header = new Grid();
-        header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        header.Children.Add(Text("Home", 23, true));
-        left.Children.Add(header);
-
-        var selector = new SelectorBar { HorizontalAlignment = HorizontalAlignment.Left };
-        var recent = new SelectorBarItem { Text = "Recent Activity" };
-        var dashboard = new SelectorBarItem { Text = "Course Dashboard" };
-        selector.Items.Add(recent); selector.Items.Add(dashboard); selector.SelectedItem = recent;
-        Grid.SetRow(selector, 1); left.Children.Add(selector);
-        var leftFrame = new Frame { Background = new SolidColorBrush(Colors.Transparent) };
-        Grid.SetRow(leftFrame, 2); left.Children.Add(leftFrame);
-        selector.SelectionChanged += (_, _) =>
-        {
-            if (selector.SelectedItem is not SelectorBarItem selected) return;
-            NavigateShellFrame(leftFrame, selected == dashboard ? BuildCourseDashboardContent() : BuildRecentActivityContent(),
+            if (wideSelector.SelectedItem is not SelectorBarItem item) return;
+            NavigateShellFrame(wideFrame,
+                item == wideDashboard ? BuildCourseDashboardContent() : BuildRecentActivityContent(),
                 SlideNavigationTransitionEffect.FromRight);
         };
-        NavigateShellFrame(leftFrame, upcomingFirst ? BuildCourseDashboardContent() : BuildRecentActivityContent(),
+        wideSelector.SelectedItem = upcomingFirst ? wideDashboard : wideRecent;
+        NavigateShellFrame(wideFrame, upcomingFirst ? BuildCourseDashboardContent() : BuildRecentActivityContent(),
             SlideNavigationTransitionEffect.FromRight);
-        if (upcomingFirst) selector.SelectedItem = dashboard;
-        split.Pane = left;
+        Grid.SetColumn(wideLeft, 0); wide.Children.Add(wideLeft);
 
-        var right = new Grid { Margin = new Thickness(14, 14, 20, 16), RowSpacing = 10 };
-        right.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        right.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-        right.Children.Add(Text("Upcoming", 23, true));
-        var upcomingFrame = new Frame { Background = new SolidColorBrush(Colors.Transparent) };
-        Grid.SetRow(upcomingFrame, 1); right.Children.Add(upcomingFrame);
-        NavigateShellFrame(upcomingFrame, BuildUpcomingContent(), SlideNavigationTransitionEffect.FromRight);
-        split.Content = right;
-        split.SizeChanged += (_, args) =>
+        var wideUpcoming = new Grid { Margin = new Thickness(14, 14, 20, 16), RowSpacing = 10 };
+        wideUpcoming.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        wideUpcoming.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        wideUpcoming.Children.Add(Text("Upcoming", 23, true));
+        var wideUpcomingFrame = new Frame { Background = new SolidColorBrush(Colors.Transparent) };
+        Grid.SetRow(wideUpcomingFrame, 1); wideUpcoming.Children.Add(wideUpcomingFrame);
+        NavigateShellFrame(wideUpcomingFrame, BuildUpcomingContent(), SlideNavigationTransitionEffect.FromRight);
+        Grid.SetColumn(wideUpcoming, 1); wide.Children.Add(wideUpcoming);
+
+        var narrow = new Grid { Margin = new Thickness(16, 12, 16, 16), RowSpacing = 10, Visibility = Visibility.Collapsed };
+        narrow.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        narrow.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        narrow.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        narrow.Children.Add(Text("Home", 23, true));
+        var narrowSelector = new SelectorBar { HorizontalAlignment = HorizontalAlignment.Stretch };
+        var narrowRecent = new SelectorBarItem { Text = "Recent Activity" };
+        var narrowDashboard = new SelectorBarItem { Text = "Course Dashboard" };
+        var narrowUpcoming = new SelectorBarItem { Text = "Upcoming" };
+        narrowSelector.Items.Add(narrowRecent);
+        narrowSelector.Items.Add(narrowDashboard);
+        narrowSelector.Items.Add(narrowUpcoming);
+        Grid.SetRow(narrowSelector, 1); narrow.Children.Add(narrowSelector);
+        var narrowFrame = new Frame { Background = new SolidColorBrush(Colors.Transparent) };
+        Grid.SetRow(narrowFrame, 2); narrow.Children.Add(narrowFrame);
+        void ShowNarrowTab(SelectorBarItem item)
         {
-            var narrow = args.NewSize.Width < 900;
-            split.DisplayMode = narrow ? SplitViewDisplayMode.Overlay : SplitViewDisplayMode.Inline;
-            split.IsPaneOpen = true;
+            var content = item == narrowDashboard ? BuildCourseDashboardContent() :
+                item == narrowUpcoming ? BuildUpcomingContent() : BuildRecentActivityContent();
+            NavigateShellFrame(narrowFrame, content, SlideNavigationTransitionEffect.FromRight);
+        }
+        narrowSelector.SelectionChanged += (_, _) =>
+        {
+            if (narrowSelector.SelectedItem is SelectorBarItem item) ShowNarrowTab(item);
         };
-        _homeSplitView = split;
-        return split;
+        narrowSelector.SelectedItem = upcomingFirst ? narrowUpcoming : narrowRecent;
+        ShowNarrowTab(upcomingFirst ? narrowUpcoming : narrowRecent);
+
+        root.Children.Add(wide);
+        root.Children.Add(narrow);
+        root.SizeChanged += (_, args) =>
+        {
+            var useNarrow = args.NewSize.Width < 800;
+            wide.Visibility = useNarrow ? Visibility.Collapsed : Visibility.Visible;
+            narrow.Visibility = useNarrow ? Visibility.Visible : Visibility.Collapsed;
+        };
+        _homeSplitView = null;
+        return root;
     }
 
     private UIElement BuildRecentActivityContent()
@@ -2459,7 +2488,7 @@ public sealed partial class MainWindow : Window
         Grid.SetRow(mailboxFrame, 2); left.Children.Add(mailboxFrame);
         var status = Text("Loading messages…", 12);
         var list = new ListView { SelectionMode = ListViewSelectionMode.Single,
-            IsItemClickEnabled = true, HorizontalContentAlignment = HorizontalAlignment.Stretch,
+            IsItemClickEnabled = false, HorizontalContentAlignment = HorizontalAlignment.Stretch,
             Background = new SolidColorBrush(Colors.Transparent) };
         AutomationProperties.SetAutomationId(list, "SchoologyMessagesList");
         AutomationProperties.SetName(list, "Messages");
