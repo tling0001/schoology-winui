@@ -5,6 +5,8 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Navigation;
+using System.Web;
+using Windows.Media.Playback;
 using System.Runtime.InteropServices;
 using Windows.Graphics;
 using Windows.Storage.Streams;
@@ -21,6 +23,8 @@ public sealed partial class MainWindow : Window
     private string _section = "Recent Activity";
     private readonly SchoologyAuthService _auth = new(false);
     private SchoologyAuthService.Session? _session;
+    private QrCameraScanner? _qrScanner;
+    private MediaPlayer? _qrPlayer;
     private readonly List<string> _courses = ["English Language Arts", "Algebra II", "Biology", "World History", "Computer Science"];
     private readonly List<string> _groups = ["Robotics Club", "Student Council", "Yearbook"];
 
@@ -153,106 +157,78 @@ public sealed partial class MainWindow : Window
     private void ShowLogin()
     {
         _page = "login";
+        _ = StopQrScannerAsync();
         var dark = _root.ActualTheme == ElementTheme.Dark;
         var scroll = new ScrollViewer
         {
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled
         };
-        var pageContent = new Grid { MinHeight = 480 };
-        pageContent.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-        pageContent.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        var stack = new StackPanel
+        {
+            Width = 460,
+            MaxWidth = 460,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            Spacing = 14,
+            Margin = new Thickness(28)
+        };
         var logo = new Image
         {
             Width = 265,
             Height = 72,
             Stretch = Microsoft.UI.Xaml.Media.Stretch.Uniform,
             HorizontalAlignment = HorizontalAlignment.Center,
-            VerticalAlignment = VerticalAlignment.Top
+            Margin = new Thickness(0, 0, 0, 20)
         };
-        pageContent.Children.Add(logo);
-        var center = new StackPanel
-        {
-            HorizontalAlignment = HorizontalAlignment.Center,
-            VerticalAlignment = VerticalAlignment.Center,
-            Spacing = 0,
-            MaxWidth = 420
-        };
-        var school = LoginActionButton("Sign in through my school", "#2E66A3", "#FFFFFF", "#2E66A3", "ic_school.svg");
-        var account = LoginActionButton("Sign in with my account", "#FFFFFF", "#2E66A3", "#FFFFFF", "ic_sgy_logo.svg");
-        var qr = LoginActionButton("Sign in with a QR code", dark ? "#292D32" : "#44505D", "#FFFFFF", dark ? "#5B6570" : "#FFFFFF", "ic_qr_code.svg");
-        school.Click += async (_, _) => await ShowOAuthSignInDialogAsync(true);
-        account.Click += async (_, _) => await ShowOAuthSignInDialogAsync(false);
-        qr.Click += async (_, _) =>
-        {
-            var dialog = new ContentDialog
-            {
-                Title = "QR code sign-in",
-                Content = "QR camera sign-in is not yet implemented in this WinUI port.",
-                CloseButtonText = "OK",
-                XamlRoot = _root.XamlRoot
-            };
-            await dialog.ShowAsync();
-        };
-        center.Children.Add(school);
-        center.Children.Add(account);
-        center.Children.Add(qr);
-        Grid.SetRow(center, 0);
-        pageContent.Children.Add(center);
+        stack.Children.Add(logo);
+        stack.Children.Add(LoginActionButton("Sign in through my school", "ic_school.svg", ShowSchoolSignInPage));
+        stack.Children.Add(LoginActionButton("Sign in with my account", "ic_sgy_logo.svg", ShowAccountSignInPage));
+        stack.Children.Add(LoginActionButton("Sign in with a QR code", "ic_qr_code.svg", ShowQrSignInPage));
         var help = new Button
         {
             Content = "I need help signing in",
-            Background = new SolidColorBrush(Colors.Transparent),
-            Foreground = Brush(dark ? "#A9AFB7" : "#F4F5F5"),
-            BorderThickness = new Thickness(0),
-            Padding = new Thickness(12, 8, 12, 8),
             HorizontalAlignment = HorizontalAlignment.Center,
-            VerticalAlignment = VerticalAlignment.Bottom
+            Margin = new Thickness(0, 8, 0, 0),
+            Padding = new Thickness(12, 8, 12, 8),
+            Background = new SolidColorBrush(Colors.Transparent),
+            BorderThickness = new Thickness(0),
+            Foreground = Brush(dark ? "#FFD0D5DA" : "#FFF2F5F7")
         };
-        help.Click += async (_, _) =>
+        help.Click += (_, _) => ShowSignInHelpPage();
+        stack.Children.Add(help);
+        scroll.Content = stack;
+        var backdrop = new AcrylicBrush
         {
-            var dialog = new ContentDialog
-            {
-                Title = "Sign-in help",
-                Content = "For help signing in, contact your school or district administrator.",
-                CloseButtonText = "OK",
-                XamlRoot = _root.XamlRoot
-            };
-            await dialog.ShowAsync();
+            TintColor = dark
+                ? Microsoft.UI.ColorHelper.FromArgb(255, 24, 30, 36)
+                : Microsoft.UI.ColorHelper.FromArgb(255, 42, 70, 91),
+            TintOpacity = dark ? 0.70 : 0.66,
+            FallbackColor = dark
+                ? Microsoft.UI.ColorHelper.FromArgb(255, 24, 30, 36)
+                : Microsoft.UI.ColorHelper.FromArgb(255, 42, 70, 91)
         };
-        Grid.SetRow(help, 1);
-        pageContent.Children.Add(help);
-        scroll.Content = pageContent;
-        var page = new Border
-        {
-            Background = Brush(dark ? "#17191C" : "#44505D"),
-            Padding = new Thickness(20, 18, 20, 18),
-            Child = scroll
-        };
+        var page = new Grid { Background = new SolidColorBrush(Colors.Transparent) };
+        page.Children.Add(new Border { Background = backdrop, Child = scroll });
         page.SizeChanged += (_, args) =>
         {
-            var narrow = args.NewSize.Width < 520;
-            center.Width = Math.Min(420, Math.Max(220, args.NewSize.Width - 40));
-            logo.Width = Math.Min(narrow ? 230 : 265, Math.Max(150, args.NewSize.Width - 64));
-            logo.Margin = new Thickness(0, args.NewSize.Height < 560 ? 12 : Math.Clamp(args.NewSize.Height * 0.137, 58, 126), 0, 0);
-            var buttonHeight = args.NewSize.Height < 560 ? 46 : 54;
-            school.MinHeight = buttonHeight;
-            account.MinHeight = buttonHeight;
-            qr.MinHeight = buttonHeight;
+            stack.Width = Math.Min(460, Math.Max(180, args.NewSize.Width - 56));
+            logo.Width = Math.Min(args.NewSize.Width < 520 ? 230 : 265, Math.Max(140, args.NewSize.Width - 96));
+            stack.Margin = args.NewSize.Height < 560 ? new Thickness(20, 8, 20, 8) : new Thickness(28);
         };
         Reset(page);
         _ = SetEmbeddedImageAsync(logo, "Schoology.WinUI.Assets.logo_schoology.png");
     }
 
-    private Button LoginActionButton(string label, string background, string foreground, string border, string iconResource)
+    private Button LoginActionButton(string label, string iconResource, Action navigate)
     {
-        var row = new Grid { ColumnSpacing = 10 };
-        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(28) });
+        var row = new Grid { ColumnSpacing = 12 };
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(30) });
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         var image = new Image
         {
-            Width = 28,
-            Height = 28,
+            Width = 26,
+            Height = 26,
             Stretch = Microsoft.UI.Xaml.Media.Stretch.Uniform,
             VerticalAlignment = VerticalAlignment.Center
         };
@@ -260,11 +236,11 @@ public sealed partial class MainWindow : Window
         {
             Text = label,
             FontSize = 15,
+            FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
             TextWrapping = TextWrapping.Wrap,
             VerticalAlignment = VerticalAlignment.Center,
             HorizontalAlignment = HorizontalAlignment.Center,
-            TextAlignment = TextAlignment.Center,
-            Foreground = Brush(foreground)
+            TextAlignment = TextAlignment.Center
         };
         row.Children.Add(image);
         Grid.SetColumn(text, 1);
@@ -272,118 +248,257 @@ public sealed partial class MainWindow : Window
         var button = new Button
         {
             Content = row,
-            Background = Brush(background),
-            Foreground = Brush(foreground),
-            BorderBrush = Brush(border),
-            BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(6),
-            Padding = new Thickness(16, 12, 16, 12),
-            Margin = new Thickness(0, 0, 0, 14),
+            Padding = new Thickness(18, 14, 18, 14),
+            MinHeight = 58,
             HorizontalAlignment = HorizontalAlignment.Stretch,
-            MinHeight = 54
+            HorizontalContentAlignment = HorizontalAlignment.Stretch
         };
         AutomationProperties.SetName(button, label);
         AutomationProperties.SetHelpText(button, label);
+        button.Click += (_, _) => navigate();
         _ = SetEmbeddedImageAsync(image, $"Schoology.WinUI.Assets.{iconResource}");
         return button;
     }
 
-    private static async Task SetEmbeddedImageAsync(Image target, string resourceName)
+    private Grid CreateLoginSubpage(string title, string subtitle, out StackPanel content)
     {
-        try
+        _page = title;
+        var dark = _root.ActualTheme == ElementTheme.Dark;
+        var grid = new Grid();
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        var header = new Grid { Margin = new Thickness(20, 14, 20, 14), ColumnSpacing = 14 };
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        var back = new Button { Content = "← Back", Padding = new Thickness(12, 8, 12, 8), VerticalAlignment = VerticalAlignment.Center };
+        back.Click += (_, _) => ShowLogin();
+        header.Children.Add(back);
+        var heading = new StackPanel { Spacing = 2, VerticalAlignment = VerticalAlignment.Center };
+        heading.Children.Add(Text(title, 21, true));
+        heading.Children.Add(new TextBlock { Text = subtitle, FontSize = 12, Foreground = Brush(dark ? "#FFC5CBD1" : "#FF52616D"), TextWrapping = TextWrapping.Wrap });
+        Grid.SetColumn(heading, 1);
+        header.Children.Add(heading);
+        Grid.SetRow(header, 0);
+        grid.Children.Add(header);
+        var scroll = new ScrollViewer { VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
+        content = new StackPanel
         {
-            await using var source = typeof(MainWindow).Assembly.GetManifestResourceStream(resourceName);
-            if (source is null) return;
-            using var memory = new MemoryStream();
-            await source.CopyToAsync(memory);
-            var stream = new InMemoryRandomAccessStream();
-            using (var writer = new DataWriter(stream))
+            Spacing = 14,
+            Width = 620,
+            MaxWidth = 620,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Top,
+            Margin = new Thickness(28)
+        };
+        scroll.Content = content;
+        var surface = new Border
+        {
+            Background = new AcrylicBrush
             {
-                writer.WriteBytes(memory.ToArray());
-                await writer.StoreAsync();
-                await writer.FlushAsync();
-                stream.Seek(0);
-                if (resourceName.EndsWith(".svg", StringComparison.OrdinalIgnoreCase))
-                {
-                    var svg = new SvgImageSource();
-                    await svg.SetSourceAsync(stream);
-                    target.Source = svg;
-                }
-                else
-                {
-                    var bitmap = new BitmapImage();
-                    await bitmap.SetSourceAsync(stream);
-                    target.Source = bitmap;
-                }
-            }
-        }
-        catch (Exception ex) { App.WriteStartupLog($"Could not load embedded image {resourceName}.", ex); }
+                TintColor = dark ? Microsoft.UI.ColorHelper.FromArgb(255, 27, 32, 38) : Microsoft.UI.ColorHelper.FromArgb(255, 248, 250, 252),
+                TintOpacity = dark ? 0.76 : 0.72,
+                FallbackColor = dark ? Microsoft.UI.ColorHelper.FromArgb(255, 27, 32, 38) : Microsoft.UI.ColorHelper.FromArgb(255, 255, 255, 255)
+            },
+            Child = scroll
+        };
+        Grid.SetRow(surface, 1);
+        grid.Children.Add(surface);
+        grid.SizeChanged += (_, args) => content.Width = Math.Min(620, Math.Max(180, args.NewSize.Width - 96));
+        Reset(grid);
+        return grid;
     }
 
-    private async Task ShowOAuthSignInDialogAsync(bool chooseSchool)
+    private void ShowSchoolSignInPage()
     {
-        var content = new StackPanel { Spacing = 10 };
-        AutoSuggestBox? school = null;
-        string? selectedSchoolId = null;
-        if (chooseSchool)
+        CreateLoginSubpage("Sign in through my school", "Find your school, then continue through its secure sign-in page.", out var content);
+        var search = new AutoSuggestBox
         {
-            school = new AutoSuggestBox { Header = "School or organization", PlaceholderText = "Enter your School or domain", UpdateTextOnSelect = false };
-            school.TextChanged += async (_, args) =>
-            {
-                if (args.Reason != AutoSuggestionBoxTextChangeReason.UserInput) return;
-                selectedSchoolId = null;
-                if (school.Text.Trim().Length < 2) return;
-                try
-                {
-                    var matches = await _auth.SearchSchoolsAsync(school.Text);
-                    school.ItemsSource = matches;
-                    school.IsSuggestionListOpen = matches.Count > 0;
-                }
-                catch { school.ItemsSource = Array.Empty<SchoologyAuthService.School>(); }
-            };
-            school.SuggestionChosen += (_, args) =>
-            {
-                if (args.SelectedItem is SchoologyAuthService.School selected)
-                {
-                    selectedSchoolId = selected.Id;
-                    school.Text = selected.Name;
-                }
-            };
-            content.Children.Add(school);
-        }
-        var username = new TextBox { Header = "Username or email", PlaceholderText = "Enter your username" };
-        var password = new PasswordBox { Header = "Password", PlaceholderText = "Enter your password" };
-        var status = Text("", 12);
-        content.Children.Add(username);
-        content.Children.Add(password);
-        content.Children.Add(status);
-        var dialog = new ContentDialog
-        {
-            Title = chooseSchool ? "Sign in through my school" : "Sign in with my account",
-            Content = content,
-            PrimaryButtonText = "Sign in",
-            CloseButtonText = "Cancel",
-            XamlRoot = _root.XamlRoot
+            Header = "School or organization",
+            PlaceholderText = "Search by school name or domain",
+            UpdateTextOnSelect = false
         };
-        dialog.PrimaryButtonClick += async (_, args) =>
+        var status = Text("Select your school to continue.", 13);
+        var continueButton = new Button { Content = "Continue to school sign-in", MinHeight = 44, HorizontalAlignment = HorizontalAlignment.Stretch, IsEnabled = false };
+        var browser = new WebView2 { MinHeight = 420, Visibility = Visibility.Collapsed };
+        SchoologyAuthService.School? selectedSchool = null;
+        search.TextChanged += async (_, args) =>
         {
-            args.Cancel = true;
-            dialog.IsPrimaryButtonEnabled = false;
-            status.Text = "Signing in and verifying your Schoology profile…";
+            if (args.Reason != AutoSuggestionBoxTextChangeReason.UserInput) return;
+            selectedSchool = null;
+            continueButton.IsEnabled = false;
+            if (search.Text.Trim().Length < 2) return;
             try
             {
-                _session = await _auth.SignInAsync(username.Text, password.Password, selectedSchoolId);
-                password.Password = string.Empty;
-                dialog.Hide();
-                ShowHome();
+                var matches = await _auth.SearchSchoolsAsync(search.Text);
+                search.ItemsSource = matches;
+                search.IsSuggestionListOpen = matches.Count > 0;
+                status.Text = matches.Count == 0 ? "No matching schools found. Try another name or domain." : "Choose your school from the suggestions.";
+            }
+            catch (Exception ex) { status.Text = ex.Message; }
+        };
+        search.SuggestionChosen += (_, args) =>
+        {
+            if (args.SelectedItem is SchoologyAuthService.School school)
+            {
+                selectedSchool = school;
+                search.Text = school.Name;
+                continueButton.IsEnabled = true;
+                status.Text = $"Selected {school.Name}. Continue to open its secure sign-in page.";
+            }
+        };
+        continueButton.Click += async (_, _) =>
+        {
+            if (selectedSchool is null) return;
+            continueButton.IsEnabled = false;
+            status.Text = "Preparing secure school sign-in…";
+            try
+            {
+                var request = await _auth.BeginSchoolBrowserLoginAsync(selectedSchool);
+                await browser.EnsureCoreWebView2Async();
+                browser.CoreWebView2.NavigationStarting += async (_, navigation) =>
+                {
+                    if (!Uri.TryCreate(navigation.Uri, UriKind.Absolute, out var callback) ||
+                        callback.Scheme != "schoology" ||
+                        !callback.Host.Equals("external_login_callback", StringComparison.OrdinalIgnoreCase))
+                        return;
+                    navigation.Cancel = true;
+                    var requestToken = HttpUtility.ParseQueryString(callback.Query).Get("request_token");
+                    if (string.IsNullOrWhiteSpace(requestToken))
+                    {
+                        status.Text = "Schoology returned an invalid sign-in callback. Please try again.";
+                        continueButton.IsEnabled = true;
+                        return;
+                    }
+                    try
+                    {
+                        status.Text = "Verifying your Schoology account…";
+                        _session = await _auth.CompleteSchoolBrowserSignInAsync(requestToken);
+                        ShowHome();
+                    }
+                    catch (Exception ex)
+                    {
+                        status.Text = ex.Message;
+                        continueButton.IsEnabled = true;
+                    }
+                };
+                search.Visibility = Visibility.Collapsed;
+                continueButton.Visibility = Visibility.Collapsed;
+                browser.Visibility = Visibility.Visible;
+                status.Text = "Complete sign-in with your school. Your password is entered only on the school sign-in page.";
+                browser.Source = new Uri(request.AuthorizationUrl);
             }
             catch (Exception ex)
             {
                 status.Text = ex.Message;
-                dialog.IsPrimaryButtonEnabled = true;
+                continueButton.IsEnabled = true;
             }
         };
-        await dialog.ShowAsync();
+        content.Children.Add(search);
+        content.Children.Add(status);
+        content.Children.Add(continueButton);
+        content.Children.Add(browser);
+    }
+
+    private void ShowAccountSignInPage()
+    {
+        CreateLoginSubpage("Sign in with my account", "Use your Schoology username or email and password.", out var content);
+        var username = new TextBox { Header = "Username or email", PlaceholderText = "Enter your username or email" };
+        var password = new PasswordBox { Header = "Password", PlaceholderText = "Enter your password" };
+        var status = Text("", 13);
+        var signIn = new Button { Content = "Sign in", MinHeight = 44, HorizontalAlignment = HorizontalAlignment.Stretch };
+        signIn.Click += async (_, _) =>
+        {
+            signIn.IsEnabled = false;
+            status.Text = "Signing in and verifying your Schoology profile…";
+            try
+            {
+                _session = await _auth.SignInAsync(username.Text, password.Password, null);
+                password.Password = string.Empty;
+                ShowHome();
+            }
+            catch (Exception ex) { status.Text = ex.Message; signIn.IsEnabled = true; }
+        };
+        content.Children.Add(username);
+        content.Children.Add(password);
+        content.Children.Add(signIn);
+        content.Children.Add(status);
+    }
+
+    private void ShowQrSignInPage()
+    {
+        CreateLoginSubpage("Sign in with a QR code", "Allow camera access and hold your Schoology QR code in front of the camera.", out var content);
+        var preview = new MediaPlayerElement
+        {
+            MinHeight = 320,
+            AreTransportControlsEnabled = false,
+            Stretch = Microsoft.UI.Xaml.Media.Stretch.UniformToFill
+        };
+        var status = Text("Camera has not started.", 13);
+        var start = new Button { Content = "Start camera", MinHeight = 44, HorizontalAlignment = HorizontalAlignment.Stretch };
+        start.Click += async (_, _) =>
+        {
+            start.IsEnabled = false;
+            status.Text = "Requesting camera access…";
+            try
+            {
+                await StopQrScannerAsync();
+                _qrScanner = new QrCameraScanner();
+                _qrScanner.QrCodeDetected += (_, qr) =>
+                {
+                    DispatcherQueue.TryEnqueue(() => _ = CompleteQrSignInAsync(qr, status, start));
+                };
+                _qrPlayer = await _qrScanner.StartAsync();
+                preview.SetMediaPlayer(_qrPlayer);
+                _qrPlayer.Play();
+                status.Text = "Camera is active. Hold the QR code steady in the frame.";
+            }
+            catch (Exception ex)
+            {
+                status.Text = $"Could not start the camera: {ex.Message}";
+                start.IsEnabled = true;
+            }
+        };
+        content.Children.Add(preview);
+        content.Children.Add(status);
+        content.Children.Add(start);
+    }
+
+    private async Task CompleteQrSignInAsync(string qr, TextBlock status, Button start)
+    {
+        start.IsEnabled = false;
+        status.Text = "QR code detected. Verifying your Schoology sign-in…";
+        try
+        {
+            await StopQrScannerAsync();
+            _session = await _auth.SignInWithQrAsync(qr);
+            ShowHome();
+        }
+        catch (Exception ex)
+        {
+            status.Text = ex.Message;
+            start.IsEnabled = true;
+        }
+    }
+
+    private async Task StopQrScannerAsync()
+    {
+        if (_qrPlayer is not null)
+        {
+            try { _qrPlayer.Pause(); _qrPlayer.Dispose(); } catch { }
+            _qrPlayer = null;
+        }
+        if (_qrScanner is not null)
+        {
+            try { await _qrScanner.DisposeAsync(); } catch { }
+            _qrScanner = null;
+        }
+    }
+
+    private void ShowSignInHelpPage()
+    {
+        CreateLoginSubpage("Sign-in help", "Choose the sign-in method provided by your school.", out var content);
+        content.Children.Add(Text("If your school uses a district sign-in page, choose “Sign in through my school” and select your school. If you have a personal Schoology account, choose “Sign in with my account”. You can also scan a Schoology QR sign-in code.", 15));
+        content.Children.Add(Action("Back to sign-in", (_, _) => ShowLogin()));
     }
 
     private async Task RestoreSavedSessionAsync()
@@ -412,6 +527,7 @@ public sealed partial class MainWindow : Window
 
     private void ShowHome(string section = "Recent Activity")
     {
+        _ = StopQrScannerAsync();
         _page = "home"; _section = section;
         var layout = new Grid { Background = ThemeBrush("SchoologySubtleBrush") };
         layout.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(248) });

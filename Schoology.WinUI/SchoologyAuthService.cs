@@ -18,6 +18,7 @@ internal sealed class SchoologyAuthService
     private static readonly HttpClient Http = new(new HttpClientHandler { AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate });
     private static long _serverTimeOffset;
     private readonly bool _canadian;
+    private (string Token, string Secret)? _pendingSchoolRequest;
     private string ApiHost => _canadian ? "api.schoologyca.com" : "api.schoology.com";
     private string WebHost => _canadian ? "app.schoologyca.com" : "app.schoology.com";
 
@@ -26,6 +27,7 @@ internal sealed class SchoologyAuthService
         public override string ToString() => Name;
     }
     internal sealed record Session(string Token, string Secret, long UserId, JsonElement User);
+    internal sealed record SchoolBrowserRequest(string AuthorizationUrl, string RequestToken);
 
     public SchoologyAuthService(bool canadian) => _canadian = canadian;
 
@@ -62,6 +64,63 @@ internal sealed class SchoologyAuthService
         var body = await response.Content.ReadAsStringAsync(cancellationToken);
         if (!response.IsSuccessStatusCode) throw new InvalidOperationException(ReadableError(body, "Schoology rejected the sign-in", response.StatusCode));
         var session = await ExchangeAndVerifyAsync(temporary, cancellationToken);
+        SaveSession(session);
+        return session;
+    }
+
+    public async Task<Session> SignInWithQrAsync(string scannedQrData, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(scannedQrData))
+            throw new InvalidOperationException("The camera did not detect a valid Schoology QR code.");
+        await SyncServerTimeAsync(cancellationToken);
+        var temporary = await GetRequestTokenAsync(cancellationToken);
+        var url = $"https://{ApiHost}/v1/oauth/qr_code_authorize_auto";
+        using var request = new HttpRequestMessage(HttpMethod.Post, url)
+        {
+            Content = new FormUrlEncodedContent(new Dictionary<string, string>
+            {
+                ["scanned_qr_data"] = scannedQrData,
+                ["oauth_token"] = temporary.Token
+            })
+        };
+        AddOAuth(request, HttpMethod.Post, url, temporary.Token, temporary.Secret, scannedQrData);
+        AddClientIdentity(request);
+        using var response = await Http.SendAsync(request, cancellationToken);
+        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+        if (!response.IsSuccessStatusCode)
+            throw new InvalidOperationException(ReadableError(body, "QR authorization failed", response.StatusCode));
+        var session = await ExchangeAndVerifyAsync(temporary, cancellationToken);
+        SaveSession(session);
+        return session;
+    }
+
+    public async Task<SchoolBrowserRequest> BeginSchoolBrowserLoginAsync(School school, CancellationToken cancellationToken = default)
+    {
+        if (school is null) throw new ArgumentNullException(nameof(school));
+        var rawDomain = (school.Domain ?? school.LoginUrl ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(rawDomain))
+            throw new InvalidOperationException("This school did not provide a secure sign-in domain.");
+        var candidate = rawDomain.Contains("://", StringComparison.Ordinal) ? rawDomain : "https://" + rawDomain;
+        if (!Uri.TryCreate(candidate, UriKind.Absolute, out var domainUri) || domainUri.Scheme != Uri.UriSchemeHttps)
+            throw new InvalidOperationException("This school provided an invalid sign-in domain.");
+        var host = domainUri.Host;
+        await SyncServerTimeAsync(cancellationToken);
+        var temporary = await GetRequestTokenAsync(cancellationToken);
+        _pendingSchoolRequest = temporary;
+        var callback = $"https://{host}/mobile_login_success?os=android&os_version=34&app_version=600000478";
+        var oauthPath = $"oauth/authorize?oauth_token={Uri.EscapeDataString(temporary.Token)}&oauth_callback={Uri.EscapeDataString(callback)}";
+        var loginUrl = $"https://{host}/{oauthPath}&login_landing_dest={Uri.EscapeDataString(oauthPath)}";
+        return new SchoolBrowserRequest(loginUrl, temporary.Token);
+    }
+
+    public async Task<Session> CompleteSchoolBrowserSignInAsync(string callbackRequestToken, CancellationToken cancellationToken = default)
+    {
+        var pending = _pendingSchoolRequest;
+        if (pending is null || string.IsNullOrWhiteSpace(callbackRequestToken) ||
+            !CryptographicOperations.FixedTimeEquals(Encoding.UTF8.GetBytes(pending.Value.Token), Encoding.UTF8.GetBytes(callbackRequestToken)))
+            throw new InvalidOperationException("The school sign-in callback did not match the pending request. Please start again.");
+        _pendingSchoolRequest = null;
+        var session = await ExchangeAndVerifyAsync(pending.Value, cancellationToken);
         SaveSession(session);
         return session;
     }
@@ -172,7 +231,7 @@ internal sealed class SchoologyAuthService
         request.Headers.TryAddWithoutValidation("Accept", "application/json, text/plain, */*");
     }
 
-    private static void AddOAuth(HttpRequestMessage request, HttpMethod method, string rawUrl, string token, string secret)
+    private static void AddOAuth(HttpRequestMessage request, HttpMethod method, string rawUrl, string token, string secret, string? scannedQrData = null)
     {
         var uri = new Uri(rawUrl);
         var nonce = Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();
@@ -180,6 +239,7 @@ internal sealed class SchoologyAuthService
         var parameters = new List<(string Key, string Value)>();
         if (!string.IsNullOrEmpty(uri.Query))
             parameters.AddRange(ParseQuery(uri.Query).Select(pair => (pair.Key, pair.Value)));
+        if (!string.IsNullOrEmpty(scannedQrData)) parameters.Add(("scanned_qr_data", JavaEncode(scannedQrData)));
         parameters.AddRange(new[]
         {
             ("oauth_consumer_key", ConsumerKey), ("oauth_nonce", nonce), ("oauth_signature_method", "HMAC-SHA1"),
