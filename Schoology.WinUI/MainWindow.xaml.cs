@@ -965,13 +965,17 @@ public sealed partial class MainWindow : Window
             IsPaneToggleButtonVisible = true,
             OpenPaneLength = 304,
             CompactPaneLength = 64,
-            PaneBackground = Brush("#FF002137"),
             Foreground = Brush("#FFFFFFFF"),
             CompactModeThresholdWidth = 760,
             ExpandedModeThresholdWidth = 1120,
             Background = new SolidColorBrush(Colors.Transparent),
             Content = null
         };
+        // WinUI 3 styles the NavigationView pane through theme resources rather than a PaneBackground property.
+        var drawerBrush = Brush("#FF002137");
+        nav.Resources["NavigationViewDefaultPaneBackground"] = drawerBrush;
+        nav.Resources["NavigationViewExpandedPaneBackground"] = drawerBrush;
+        nav.Resources["NavigationViewCompactPaneBackground"] = drawerBrush;
         var animationsEnabled = new UISettings().AnimationsEnabled;
         var initialTransition = new SlideNavigationTransitionInfo { Effect = SlideNavigationTransitionEffect.FromRight };
         var sectionFrame = new Frame
@@ -1532,6 +1536,11 @@ public sealed partial class MainWindow : Window
         var panel = new StackPanel { Spacing = 8 };
         var breadcrumb = Text("Materials", 13, true);
         var history = new Stack<(SchoologyApiRecord[] Records, string Title)>();
+        IReadOnlyList<SchoologyApiRecord> current = initialRecords;
+        // Create the list before the Back handler captures Render/list.
+        var list = new ListView { SelectionMode = ListViewSelectionMode.Single, IsItemClickEnabled = true,
+            HorizontalContentAlignment = HorizontalAlignment.Stretch };
+        AutomationProperties.SetAutomationId(list, "CourseMaterialsList");
         Button back = null!;
         back = Action("‹ Back to course materials", (_, _) =>
         {
@@ -1542,10 +1551,6 @@ public sealed partial class MainWindow : Window
             back.IsEnabled = history.Count > 0;
         });
         back.IsEnabled = false;
-        IReadOnlyList<SchoologyApiRecord> current = initialRecords;
-        var list = new ListView { SelectionMode = ListViewSelectionMode.Single, IsItemClickEnabled = true,
-            HorizontalContentAlignment = HorizontalAlignment.Stretch };
-        AutomationProperties.SetAutomationId(list, "CourseMaterialsList");
         void Render(IReadOnlyList<SchoologyApiRecord> records)
         {
             current = records;

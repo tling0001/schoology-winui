@@ -12,10 +12,10 @@
     <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <Version>2026.10.0-port.9</Version>
-    <AssemblyVersion>2026.10.0.8</AssemblyVersion>
-    <FileVersion>2026.10.0.8</FileVersion>
-    <InformationalVersion>2026.10.0-port.9</InformationalVersion>
+    <Version>2026.10.0-port.10</Version>
+    <AssemblyVersion>2026.10.0.9</AssemblyVersion>
+    <FileVersion>2026.10.0.9</FileVersion>
+    <InformationalVersion>2026.10.0-port.10</InformationalVersion>
     <AssemblyName>Schoology.WinUI</AssemblyName>
     <ApplicationIcon>Assets\\Schoology.ico</ApplicationIcon>
   </PropertyGroup>
