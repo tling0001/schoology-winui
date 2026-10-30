@@ -43,6 +43,7 @@ public sealed partial class MainWindow : Window
     private MediaPlayer? _qrPlayer;
     private static readonly string WindowStatePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Schoology", "window-state.json");
     private static readonly string ReleaseNotesStatePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Schoology", "release-notes-version.txt");
+    private static readonly string AppSettingsPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Schoology", "settings.json");
     private static readonly HttpClient ReleaseNotesClient = new();
     private bool _restoringWindowState;
 
@@ -54,7 +55,7 @@ public sealed partial class MainWindow : Window
 
         _root = Root;
         _api = new SchoologyApiClient(_auth);
-        _root.RequestedTheme = (ApplicationData.Current.LocalSettings.Values["AppTheme"] as string) switch
+        _root.RequestedTheme = ReadAppSetting("AppTheme", "System default") switch
         {
             "Light" => ElementTheme.Light,
             "Dark" => ElementTheme.Dark,
@@ -1370,7 +1371,7 @@ public sealed partial class MainWindow : Window
 
     private UIElement BuildCourseDashboardContent()
     {
-        var list = new ListView { SelectionMode = ListViewSelectionMode.None, IsItemClickEnabled = true,
+        var list = new ListView { SelectionMode = ListViewSelectionMode.None, IsItemClickEnabled = false,
             HorizontalContentAlignment = HorizontalAlignment.Stretch };
         AutomationProperties.SetAutomationId(list, "HomeCourseDashboardList");
         if (_courses.Count == 0) list.Items.Add(new ListViewItem { Content = Text("No courses were returned for this account.", 13) });
@@ -1564,12 +1565,12 @@ public sealed partial class MainWindow : Window
         appearance.Children.Add(Text("App theme", 13, true));
         var theme = new ComboBox { Width = 260, HorizontalAlignment = HorizontalAlignment.Left };
         foreach (var value in new[] { "System default", "Light", "Dark" }) theme.Items.Add(value);
-        var saved = ApplicationData.Current.LocalSettings.Values["AppTheme"] as string ?? "System default";
+        var saved = ReadAppSetting("AppTheme", "System default");
         theme.SelectedItem = saved;
         theme.SelectionChanged += (_, _) =>
         {
             var value = theme.SelectedItem?.ToString() ?? "System default";
-            ApplicationData.Current.LocalSettings.Values["AppTheme"] = value;
+            WriteAppSetting("AppTheme", value);
             _root.RequestedTheme = value switch { "Light" => ElementTheme.Light, "Dark" => ElementTheme.Dark, _ => ElementTheme.Default };
         };
         appearance.Children.Add(theme);
@@ -1577,9 +1578,9 @@ public sealed partial class MainWindow : Window
         var behavior = new StackPanel { Spacing = 8 };
         behavior.Children.Add(Text("Behavior", 18, true));
         var reduceMotion = new CheckBox { Content = "Reduce motion",
-            IsChecked = ApplicationData.Current.LocalSettings.Values["ReduceMotion"] as bool? ?? false };
-        reduceMotion.Checked += (_, _) => ApplicationData.Current.LocalSettings.Values["ReduceMotion"] = true;
-        reduceMotion.Unchecked += (_, _) => ApplicationData.Current.LocalSettings.Values["ReduceMotion"] = false;
+            IsChecked = string.Equals(ReadAppSetting("ReduceMotion", "false"), "true", StringComparison.OrdinalIgnoreCase) };
+        reduceMotion.Checked += (_, _) => WriteAppSetting("ReduceMotion", "true");
+        reduceMotion.Unchecked += (_, _) => WriteAppSetting("ReduceMotion", "false");
         behavior.Children.Add(reduceMotion);
         panel.Children.Add(Surface(behavior, new Thickness(14)));
         panel.Children.Add(Text("About", 18, true));
@@ -1677,7 +1678,7 @@ public sealed partial class MainWindow : Window
 
         var detail = new Frame { Background = new SolidColorBrush(Colors.Transparent) };
         var navigation = new ListView { SelectionMode = ListViewSelectionMode.Single,
-            IsItemClickEnabled = true, HorizontalContentAlignment = HorizontalAlignment.Stretch,
+            IsItemClickEnabled = false, HorizontalContentAlignment = HorizontalAlignment.Stretch,
             Background = new SolidColorBrush(Colors.Transparent) };
         AutomationProperties.SetAutomationId(navigation, kind + "ProfileNavigation");
         foreach (var tab in tabs)
@@ -1706,11 +1707,13 @@ public sealed partial class MainWindow : Window
             tabLabel.Foreground = ThemeBrush("SchoologyTextBrush");
             Grid.SetColumn(tabLabel, 1);
             tabRow.Children.Add(tabLabel);
-            navigation.Items.Add(new ListViewItem
+            var tabItem = new ListViewItem
             {
                 Content = tabRow, Tag = tab,
                 Padding = new Thickness(14, 10, 14, 10)
-            });
+            };
+            tabItem.Tapped += (_, _) => ShowTab(tab);
+            navigation.Items.Add(tabItem);
         }
         Grid.SetRow(navigation, 1);
         sidebar.Children.Add(navigation);
@@ -1773,10 +1776,7 @@ public sealed partial class MainWindow : Window
             NavigateShellFrame(compactFrame, tab == "Upcoming" ? BuildUpcomingContent() :
                 BuildEntityTabContent(kind, entityId, entityName, tab, selected, showInfobox: false), SlideNavigationTransitionEffect.FromRight);
         }
-        navigation.ItemClick += (_, args) =>
-        {
-            if (args.ClickedItem is ListViewItem { Tag: string tab }) ShowTab(tab);
-        };
+
         compactSelector.SelectionChanged += (_, _) =>
         {
             if (compactSelector.SelectedItem is SelectorBarItem item) ShowTab(item.Text);
@@ -1801,7 +1801,32 @@ public sealed partial class MainWindow : Window
 
     private bool AnimationsEnabled =>
         new UISettings().AnimationsEnabled &&
-        !(ApplicationData.Current.LocalSettings.Values["ReduceMotion"] as bool? ?? false);
+        !string.Equals(ReadAppSetting("ReduceMotion", "false"), "true", StringComparison.OrdinalIgnoreCase);
+
+    private static string ReadAppSetting(string key, string fallback)
+    {
+        try
+        {
+            if (!File.Exists(AppSettingsPath)) return fallback;
+            var values = JsonSerializer.Deserialize<Dictionary<string, string>>(File.ReadAllText(AppSettingsPath));
+            return values is not null && values.TryGetValue(key, out var value) ? value : fallback;
+        }
+        catch { return fallback; }
+    }
+
+    private static void WriteAppSetting(string key, string value)
+    {
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(AppSettingsPath)!);
+            var values = File.Exists(AppSettingsPath)
+                ? JsonSerializer.Deserialize<Dictionary<string, string>>(File.ReadAllText(AppSettingsPath)) ?? new Dictionary<string, string>()
+                : new Dictionary<string, string>();
+            values[key] = value;
+            File.WriteAllText(AppSettingsPath, JsonSerializer.Serialize(values));
+        }
+        catch (Exception ex) { App.WriteStartupLog($"Could not save setting '{key}'.", ex); }
+    }
 
     private void NavigateShellFrame(Frame frame, UIElement content, SlideNavigationTransitionEffect effect)
     {
@@ -1883,23 +1908,12 @@ public sealed partial class MainWindow : Window
             if (tab == "Materials") { body.Children.Add(BuildMaterialsList(entityId, records)); return; }
             if (tab == "Grades")
             {
-                var courseGrades = records.Where(record =>
-                {
-                    var sectionId = JsonLong(record.Data, "section_id", "sectionId", "course_id", "courseId");
-                    return sectionId == 0 || sectionId == entityId;
-                }).ToArray();
-                if (courseGrades.Length == 0)
+                var sections = SchoologyApiClient.ReadRecords(document.RootElement, "section", "sections");
+                var selectedSection = sections.FirstOrDefault(record =>
+                    JsonLong(record.Data, "section_id", "sectionId", "id") == entityId);
+                if (selectedSection is null)
                     body.Children.Add(Surface(Text("No grades were returned for this course.")));
-                foreach (var grade in courseGrades)
-                {
-                    var gradeContent = new StackPanel { Spacing = 4, Margin = new Thickness(10) };
-                    var value = ProfileValue(grade.Data, "grade", "grade_value", "score", "percentage", "letter_grade");
-                    if (!string.IsNullOrWhiteSpace(value)) gradeContent.Children.Add(Text(value, 13, true));
-                    var detail = ProfileValue(grade.Data, "comment", "description", "feedback");
-                    if (!string.IsNullOrWhiteSpace(detail)) gradeContent.Children.Add(Text(StripMarkup(detail), 12));
-                    body.Children.Add(new Expander { Header = ProfileValue(grade.Data, "assignment_title", "title", "name") ?? grade.Title,
-                        IsExpanded = true, Content = gradeContent });
-                }
+                else body.Children.Add(BuildGradeDetails(selectedSection.Data, expandPeriods: true));
                 return;
             }
             if (records.Count == 0)
@@ -1950,7 +1964,7 @@ public sealed partial class MainWindow : Window
         var history = new Stack<(SchoologyApiRecord[] Records, string Title)>();
         IReadOnlyList<SchoologyApiRecord> current = initialRecords;
         // Create the list before the Back handler captures Render/list.
-        var list = new ListView { SelectionMode = ListViewSelectionMode.Single, IsItemClickEnabled = true,
+        var list = new ListView { SelectionMode = ListViewSelectionMode.Single, IsItemClickEnabled = false,
             HorizontalContentAlignment = HorizontalAlignment.Stretch, MaxHeight = 680 };
         AutomationProperties.SetAutomationId(list, "CourseMaterialsList");
         Button back = null!;
@@ -2699,6 +2713,64 @@ public sealed partial class MainWindow : Window
         return System.Text.RegularExpressions.Regex.Replace(text, "\\s+", " ").Trim();
     }
 
+    private UIElement BuildGradeDetails(JsonElement section, bool expandPeriods)
+    {
+        var content = new StackPanel { Spacing = 8 };
+        if (section.ValueKind != JsonValueKind.Object) return content;
+        if (section.TryGetProperty("period", out var periods) && periods.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var period in periods.EnumerateArray())
+            {
+                var periodName = ProfileValue(period, "period_title", "title", "name") ?? "Grading period";
+                var periodGrade = ProfileValue(period, "override_str", "override_numeric", "grade");
+                var periodContent = new StackPanel { Spacing = 6, Margin = new Thickness(10) };
+                if (!string.IsNullOrWhiteSpace(periodGrade))
+                    periodContent.Children.Add(Text("Period grade: " + periodGrade, 13, true));
+                if (period.TryGetProperty("assignment", out var assignments) && assignments.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var assignment in assignments.EnumerateArray())
+                    {
+                        var assignmentId = ProfileValue(assignment, "assignment_id", "id") ?? "Assignment";
+                        var grade = ProfileValue(assignment, "grade", "calculated_grade");
+                        var max = ProfileValue(assignment, "max_points");
+                        var line = new StackPanel { Spacing = 2 };
+                        line.Children.Add(Text("Assignment " + assignmentId, 13, true));
+                        if (!string.IsNullOrWhiteSpace(grade))
+                            line.Children.Add(Text(string.IsNullOrWhiteSpace(max) ? grade : grade + " / " + max, 12));
+                        var comment = ProfileValue(assignment, "comment");
+                        if (!string.IsNullOrWhiteSpace(comment)) line.Children.Add(Text(StripMarkup(comment), 12));
+                        periodContent.Children.Add(Surface(line));
+                    }
+                }
+                content.Children.Add(new Expander { Header = string.IsNullOrWhiteSpace(periodGrade) ? periodName : periodName + " · " + periodGrade,
+                    IsExpanded = expandPeriods, Content = periodContent });
+            }
+        }
+        if (section.TryGetProperty("final_grade", out var finalGrades) && finalGrades.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var final in finalGrades.EnumerateArray())
+            {
+                var grade = ProfileValue(final, "override_str", "override_numeric", "grade");
+                var comment = ProfileValue(final, "comment");
+                var finalPanel = new StackPanel { Spacing = 3 };
+                finalPanel.Children.Add(Text("Final grade: " + (grade ?? "Not posted"), 13, true));
+                if (!string.IsNullOrWhiteSpace(comment)) finalPanel.Children.Add(Text(StripMarkup(comment), 12));
+                content.Children.Add(Surface(finalPanel));
+            }
+        }
+        if (section.TryGetProperty("grading_category", out var categories) && categories.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var category in categories.EnumerateArray())
+            {
+                var name = ProfileValue(category, "title", "name") ?? "Category";
+                var grade = ProfileValue(category, "grade");
+                content.Children.Add(Text(string.IsNullOrWhiteSpace(grade) ? name : name + ": " + grade, 12));
+            }
+        }
+        if (content.Children.Count == 0) content.Children.Add(Text("No grade details were returned for this course.", 13));
+        return content;
+    }
+
     private UIElement BuildGradesPage()
     {
         var root = new Grid { Margin = new Thickness(24), RowSpacing = 10 };
@@ -2724,22 +2796,12 @@ public sealed partial class MainWindow : Window
                 try
                 {
                     using var document = await _api.GetUserGradesAsync(_session);
-                    var records = SchoologyApiClient.ReadRecords(document.RootElement, "grade", "grades");
-                    var matching = records.Where(record =>
-                    {
-                        var id = JsonLong(record.Data, "section_id", "sectionId", "course_id", "courseId");
-                        return id == 0 || id == course.Id;
-                    }).ToArray();
+                    var sections = SchoologyApiClient.ReadRecords(document.RootElement, "section", "sections");
+                    var section = sections.FirstOrDefault(record =>
+                        JsonLong(record.Data, "section_id", "sectionId", "id") == course.Id);
                     content.Children.Clear();
-                    if (matching.Length == 0) content.Children.Add(Text("No grades were returned for this course.", 13));
-                    foreach (var grade in matching)
-                    {
-                        var row = new StackPanel { Spacing = 3 };
-                        row.Children.Add(Text(ProfileValue(grade.Data, "assignment_title", "title", "name") ?? grade.Title, 14, true));
-                        var value = ProfileValue(grade.Data, "grade", "grade_value", "score", "percentage", "letter_grade");
-                        if (!string.IsNullOrWhiteSpace(value)) row.Children.Add(Text(value, 12));
-                        content.Children.Add(Surface(row));
-                    }
+                    if (section is null) content.Children.Add(Text("No grades were returned for this course.", 13));
+                    else content.Children.Add(BuildGradeDetails(section.Data, expandPeriods: false));
                 }
                 catch (Exception ex)
                 {
