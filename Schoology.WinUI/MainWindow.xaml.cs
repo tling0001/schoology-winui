@@ -42,8 +42,9 @@ public sealed partial class MainWindow : Window
         try { SystemBackdrop = new MicaBackdrop(); } catch { }
 
         App.WriteStartupLog("Setting initial window size.");
-        SetWindowSize(1260, 820);
-        App.WriteStartupLog("Initial window size step completed.");
+        SetWindowSize(520, 360);
+        _ = SetWindowIconAsync();
+        App.WriteStartupLog("Initial splash window size and native window icon configured.");
 
         App.WriteStartupLog("Creating splash screen.");
         ShowSplash();
@@ -56,6 +57,7 @@ public sealed partial class MainWindow : Window
             {
                 App.WriteStartupLog("Splash timer tick; switching to login.");
                 _splashTimer.Stop();
+                SetWindowSize(1260, 820);
                 ShowLogin();
                 App.WriteStartupLog("Login screen created.");
                 _ = RestoreSavedSessionAsync();
@@ -162,15 +164,75 @@ public sealed partial class MainWindow : Window
         _root.Children.Add(content);
     }
 
+    private async Task SetWindowIconAsync()
+    {
+        try
+        {
+            var assembly = typeof(MainWindow).Assembly;
+            var resourceName = assembly.GetManifestResourceNames()
+                .FirstOrDefault(name => name.EndsWith("Schoology.WinUI.Assets.Schoology.ico", StringComparison.Ordinal));
+            if (resourceName is null)
+            {
+                App.WriteStartupLog("Embedded Schoology window icon resource was not found.");
+                return;
+            }
+
+            await using var source = assembly.GetManifestResourceStream(resourceName);
+            if (source is null) return;
+            using var buffer = new MemoryStream();
+            await source.CopyToAsync(buffer);
+            var iconDirectory = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "Schoology", "Assets");
+            Directory.CreateDirectory(iconDirectory);
+            var iconPath = Path.Combine(iconDirectory, "Schoology.ico");
+            await File.WriteAllBytesAsync(iconPath, buffer.ToArray());
+            AppWindow.SetIcon(iconPath);
+            App.WriteStartupLog("Native Schoology window icon applied.");
+        }
+        catch (Exception ex)
+        {
+            App.WriteStartupLog("Could not apply the native Schoology window icon.", ex);
+        }
+    }
+
     private void ShowSplash()
     {
         _page = "splash";
-        var grid = new Grid { Background = Brush("#2E66A3") };
-        var stack = new StackPanel { HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center, Spacing = 14 };
-        stack.Children.Add(new TextBlock { Text = "schoology", FontSize = 48, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, Foreground = Brush("#FFFFFF"), HorizontalAlignment = HorizontalAlignment.Center });
-        var ring = new ProgressRing { IsActive = new UISettings().AnimationsEnabled, Width = 30, Height = 30, Foreground = Brush("#FFFFFF"), HorizontalAlignment = HorizontalAlignment.Center };
-        stack.Children.Add(ring); stack.Children.Add(new TextBlock { Text = "Learning starts here", FontSize = 14, Foreground = Brush("#EAF3FB"), HorizontalAlignment = HorizontalAlignment.Center });
-        grid.Children.Add(stack); Reset(grid);
+        // Unpackaged WinUI 3 apps do not receive the MSIX-managed splash surface.
+        // Use a compact native WinUI launch surface over the Window's Mica backdrop.
+        var grid = new Grid { Background = new SolidColorBrush(Colors.Transparent) };
+        var stack = new StackPanel
+        {
+            Width = 360,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            Spacing = 18
+        };
+        var logo = new Image
+        {
+            Width = 270,
+            Height = 74,
+            Stretch = Microsoft.UI.Xaml.Media.Stretch.Uniform,
+            HorizontalAlignment = HorizontalAlignment.Center
+        };
+        stack.Children.Add(logo);
+        var ring = new ProgressRing
+        {
+            IsActive = new UISettings().AnimationsEnabled,
+            Width = 28,
+            Height = 28,
+            Foreground = ThemeBrush("SchoologyBlueBrush"),
+            HorizontalAlignment = HorizontalAlignment.Center
+        };
+        stack.Children.Add(ring);
+        var caption = Text("Getting Schoology ready…", 13);
+        caption.Foreground = ThemeBrush("SchoologyMutedTextBrush");
+        caption.HorizontalAlignment = HorizontalAlignment.Center;
+        stack.Children.Add(caption);
+        grid.Children.Add(stack);
+        Reset(grid);
+        _ = SetEmbeddedImageAsync(logo, "Schoology.WinUI.Assets.logo_schoology.png");
     }
 
     private void ShowLogin()
@@ -186,12 +248,12 @@ public sealed partial class MainWindow : Window
         };
         var stack = new StackPanel
         {
-            Width = 460,
+            Width = 440,
             MaxWidth = 460,
             HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center,
             Spacing = 14,
-            Margin = new Thickness(28)
+            Margin = new Thickness(20)
         };
         var logo = new Image
         {
@@ -250,9 +312,9 @@ public sealed partial class MainWindow : Window
         {
             card.Width = Math.Min(520, Math.Max(220, args.NewSize.Width - 48));
             scroll.MaxHeight = Math.Max(240, args.NewSize.Height - 48);
-            stack.Width = Math.Min(460, Math.Max(180, args.NewSize.Width - 104));
-            logo.Width = Math.Min(args.NewSize.Width < 520 ? 230 : 265, Math.Max(140, args.NewSize.Width - 144));
             stack.Margin = args.NewSize.Height < 560 ? new Thickness(20, 8, 20, 8) : new Thickness(28);
+            stack.Width = Math.Min(460, Math.Max(180, card.Width - 16 - stack.Margin.Left - stack.Margin.Right));
+            logo.Width = Math.Min(265, Math.Max(140, stack.Width - 40));
         };
         Reset(page);
         _ = SetEmbeddedImageAsync(logo, "Schoology.WinUI.Assets.logo_schoology.png");

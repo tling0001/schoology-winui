@@ -15,7 +15,15 @@ internal sealed class SchoologyAuthService
     private const string ConsumerSecret = "5cff9d3780d64695d762ba8e05a34e9e";
     private const string MobileCookie = "s_mobile=03447c0175ac0c7299a5508fde9569fc";
     private const string VaultResource = "Schoology.WinUI.OAuth";
-    private static readonly HttpClient Http = new(new HttpClientHandler { AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate });
+    private static readonly HttpClient Http = new(new HttpClientHandler
+    {
+        AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate
+    });
+    private static readonly HttpClient OAuthHttp = new(new HttpClientHandler
+    {
+        AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate,
+        AllowAutoRedirect = false
+    });
     private static long _serverTimeOffset;
     private readonly bool _canadian;
     private (string Token, string Secret)? _pendingSchoolRequest;
@@ -75,17 +83,14 @@ internal sealed class SchoologyAuthService
         await SyncServerTimeAsync(cancellationToken);
         var temporary = await GetRequestTokenAsync(cancellationToken);
         var url = $"https://{ApiHost}/v1/oauth/qr_code_authorize_auto";
-        using var request = new HttpRequestMessage(HttpMethod.Post, url)
+        var fields = new Dictionary<string, string>
         {
-            Content = new FormUrlEncodedContent(new Dictionary<string, string>
-            {
-                ["scanned_qr_data"] = scannedQrData,
-                ["oauth_token"] = temporary.Token
-            })
+            ["scanned_qr_data"] = scannedQrData,
+            ["oauth_token"] = temporary.Token
         };
-        AddOAuth(request, HttpMethod.Post, url, temporary.Token, temporary.Secret, scannedQrData);
-        AddClientIdentity(request);
-        using var response = await Http.SendAsync(request, cancellationToken);
+        using var response = await SendSignedRequestAsync(
+            HttpMethod.Post, url, () => new FormUrlEncodedContent(fields),
+            temporary.Token, temporary.Secret, scannedQrData, cancellationToken);
         var body = await response.Content.ReadAsStringAsync(cancellationToken);
         if (!response.IsSuccessStatusCode)
             throw new InvalidOperationException(ReadableError(body, "QR authorization failed", response.StatusCode));
@@ -159,13 +164,76 @@ internal sealed class SchoologyAuthService
         catch { }
     }
 
+    // HttpClient's automatic redirect handling can drop OAuth Authorization
+    // headers. Follow Schoology API redirects explicitly and generate a fresh
+    // OAuth signature for every hop, matching the official port.28 request flow.
+    private static async Task<HttpResponseMessage> SendSignedRequestAsync(
+        HttpMethod method,
+        string rawUrl,
+        Func<HttpContent?> contentFactory,
+        string token,
+        string secret,
+        string? scannedQrData,
+        CancellationToken cancellationToken)
+    {
+        var currentUri = new Uri(rawUrl, UriKind.Absolute);
+        var expectedHost = currentUri.IdnHost;
+        for (var redirectCount = 0; redirectCount <= 5; redirectCount++)
+        {
+            using var request = new HttpRequestMessage(method, currentUri)
+            {
+                Content = contentFactory()
+            };
+            AddOAuth(request, method, currentUri.AbsoluteUri, token, secret, scannedQrData);
+            AddClientIdentity(request);
+            var response = await OAuthHttp.SendAsync(
+                request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+
+            var status = (int)response.StatusCode;
+            var location = response.Headers.Location;
+            if (status is not (301 or 302 or 303 or 307 or 308) || location is null)
+                return response;
+
+            if (redirectCount == 5)
+            {
+                response.Dispose();
+                throw new InvalidOperationException("Schoology returned too many redirects during OAuth sign-in.");
+            }
+
+            var nextUri = location.IsAbsoluteUri ? location : new Uri(currentUri, location);
+            if (nextUri.Scheme != Uri.UriSchemeHttps ||
+                !string.Equals(nextUri.IdnHost, expectedHost, StringComparison.OrdinalIgnoreCase) ||
+                !string.IsNullOrEmpty(nextUri.UserInfo))
+            {
+                response.Dispose();
+                throw new InvalidOperationException("Schoology returned an unsafe OAuth redirect. Sign-in was stopped.");
+            }
+
+            response.Dispose();
+            if (status == 303 ||
+                ((status == 301 || status == 302) && method != HttpMethod.Get && method != HttpMethod.Head))
+            {
+                method = HttpMethod.Get;
+                contentFactory = () => null;
+                scannedQrData = null;
+            }
+            currentUri = nextUri;
+        }
+
+        throw new InvalidOperationException("Schoology OAuth sign-in could not complete.");
+    }
+
+    private static string SafeDiagnosticBody(string body)
+    {
+        var compact = string.Join(" ", body.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+        return compact.Length <= 1200 ? compact : compact[..1200];
+    }
+
     private async Task<(string Token, string Secret)> GetRequestTokenAsync(CancellationToken cancellationToken)
     {
         var url = $"https://{ApiHost}/v1/oauth/request_token";
-        using var request = new HttpRequestMessage(HttpMethod.Get, url);
-        AddOAuth(request, HttpMethod.Get, url, "", "");
-        AddClientIdentity(request);
-        using var response = await Http.SendAsync(request, cancellationToken);
+        using var response = await SendSignedRequestAsync(
+            HttpMethod.Get, url, () => null, "", "", null, cancellationToken);
         var body = await response.Content.ReadAsStringAsync(cancellationToken);
         if (!response.IsSuccessStatusCode) throw new InvalidOperationException(ReadableError(body, "Could not start Schoology OAuth", response.StatusCode));
         var values = ParseForm(body);
@@ -177,10 +245,8 @@ internal sealed class SchoologyAuthService
     private async Task<Session> ExchangeAndVerifyAsync((string Token, string Secret) temporary, CancellationToken cancellationToken)
     {
         var url = $"https://{ApiHost}/v1/oauth/access_token";
-        using var request = new HttpRequestMessage(HttpMethod.Get, url);
-        AddOAuth(request, HttpMethod.Get, url, temporary.Token, temporary.Secret);
-        AddClientIdentity(request);
-        using var response = await Http.SendAsync(request, cancellationToken);
+        using var response = await SendSignedRequestAsync(
+            HttpMethod.Get, url, () => null, temporary.Token, temporary.Secret, null, cancellationToken);
         var body = await response.Content.ReadAsStringAsync(cancellationToken);
         if (!response.IsSuccessStatusCode) throw new InvalidOperationException(ReadableError(body, "Schoology could not exchange the OAuth token", response.StatusCode));
         var values = ParseForm(body);
@@ -195,12 +261,14 @@ internal sealed class SchoologyAuthService
     private async Task<JsonElement> GetCurrentUserAsync(string token, string secret, CancellationToken cancellationToken)
     {
         var url = $"https://{ApiHost}/v1/users/me";
-        using var request = new HttpRequestMessage(HttpMethod.Get, url);
-        AddOAuth(request, HttpMethod.Get, url, token, secret);
-        AddClientIdentity(request);
-        using var response = await Http.SendAsync(request, cancellationToken);
+        using var response = await SendSignedRequestAsync(
+            HttpMethod.Get, url, () => null, token, secret, null, cancellationToken);
         var body = await response.Content.ReadAsStringAsync(cancellationToken);
-        if (!response.IsSuccessStatusCode) throw new InvalidOperationException(ReadableError(body, "Schoology could not verify your signed-in profile", response.StatusCode));
+        if (!response.IsSuccessStatusCode)
+        {
+            App.WriteStartupLog($"Schoology OAuth profile request failed: HTTP {(int)response.StatusCode}; final URL: {response.RequestMessage?.RequestUri}; response: {SafeDiagnosticBody(body)}");
+            throw new InvalidOperationException(ReadableError(body, "Schoology could not verify your signed-in profile", response.StatusCode));
+        }
         using var document = JsonDocument.Parse(body);
         return document.RootElement.Clone();
     }

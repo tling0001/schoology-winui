@@ -12,7 +12,10 @@
     <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <Version>1.0.1</Version>
+    <Version>2026.10.0-port.1</Version>
+    <AssemblyVersion>2026.10.0.1</AssemblyVersion>
+    <FileVersion>2026.10.0.1</FileVersion>
+    <InformationalVersion>2026.10.0-port.1</InformationalVersion>
     <AssemblyName>Schoology.WinUI</AssemblyName>
     <ApplicationIcon>Assets\\Schoology.ico</ApplicationIcon>
   </PropertyGroup>
@@ -38,5 +41,6 @@
     <EmbeddedResource Include="Assets\\ic_school.svg" />
     <EmbeddedResource Include="Assets\\ic_sgy_logo.svg" />
     <EmbeddedResource Include="Assets\\ic_qr_code.svg" />
+    <EmbeddedResource Include="Assets\\Schoology.ico" />
   </ItemGroup>
 </Project>
