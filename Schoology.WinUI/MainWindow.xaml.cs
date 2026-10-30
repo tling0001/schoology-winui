@@ -14,6 +14,7 @@ using Windows.Graphics;
 using Windows.Storage.Streams;
 using Microsoft.UI.Xaml.Media.Imaging;
 using Windows.UI.ViewManagement;
+using Windows.System;
 
 namespace Schoology.WinUI;
 
@@ -22,6 +23,7 @@ public sealed partial class MainWindow : Window
     private readonly Grid _root;
     private readonly DispatcherTimer _splashTimer;
     private string _page = "login";
+    private string _lastRenderedPage = "splash";
     private string _section = "Recent Activity";
     private readonly SchoologyAuthService _auth = new(false);
     private SchoologyAuthService.Session? _session;
@@ -149,19 +151,38 @@ public sealed partial class MainWindow : Window
     }
     private void Reset(UIElement content)
     {
+        var previousPage = _lastRenderedPage;
+        var destinationPage = _page;
         _root.Children.Clear();
+
+        // Use native WinUI entrance transitions with direction derived from the
+        // navigation origin. Returning to the login root moves in from the left;
+        // opening a child screen moves in from the right; sibling/home navigation
+        // uses a subtle forward motion. Respect the system reduced-motion setting.
         if (new UISettings().AnimationsEnabled)
         {
+            var returningToRoot = destinationPage == "login" &&
+                previousPage is not "splash" and not "login";
+            var movingBackToHome = destinationPage == "home" &&
+                previousPage is not "login" and not "splash" &&
+                previousPage != "home";
+            var horizontalOffset = returningToRoot || movingBackToHome ? -36 : 36;
             content.Transitions = new TransitionCollection
             {
-                new EntranceThemeTransition { FromHorizontalOffset = 24 }
+                new EntranceThemeTransition
+                {
+                    FromHorizontalOffset = horizontalOffset,
+                    FromVerticalOffset = 8
+                }
             };
         }
         else
         {
             content.Transitions = null;
         }
+
         _root.Children.Add(content);
+        _lastRenderedPage = destinationPage;
     }
 
     private async Task SetWindowIconAsync()
@@ -253,7 +274,7 @@ public sealed partial class MainWindow : Window
             HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center,
             Spacing = 14,
-            Margin = new Thickness(20)
+            Margin = new Thickness(16, 12, 16, 12)
         };
         var logo = new Image
         {
@@ -301,7 +322,7 @@ public sealed partial class MainWindow : Window
             BorderBrush = ThemeBrush("SchoologyDividerBrush"),
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(12),
-            Padding = new Thickness(8),
+            Padding = new Thickness(0),
             Child = scroll,
             HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center
@@ -312,8 +333,11 @@ public sealed partial class MainWindow : Window
         {
             card.Width = Math.Min(520, Math.Max(220, args.NewSize.Width - 48));
             scroll.MaxHeight = Math.Max(240, args.NewSize.Height - 48);
-            stack.Margin = args.NewSize.Height < 560 ? new Thickness(20, 8, 20, 8) : new Thickness(28);
-            stack.Width = Math.Min(460, Math.Max(180, card.Width - 16 - stack.Margin.Left - stack.Margin.Right));
+            // Keep horizontal insets fixed; do not increase them with the window
+            // size. The previous wide-window margin calculation squeezed the
+            // buttons inside their card and clipped their outer edges.
+            stack.Margin = new Thickness(16, args.NewSize.Height < 560 ? 8 : 16, 16, args.NewSize.Height < 560 ? 8 : 16);
+            stack.Width = Math.Max(180, card.Width - stack.Margin.Left - stack.Margin.Right);
             logo.Width = Math.Min(265, Math.Max(140, stack.Width - 40));
         };
         Reset(page);
@@ -528,39 +552,9 @@ public sealed partial class MainWindow : Window
             status.Text = "Preparing secure school sign-in…";
             try
             {
-                var request = await _auth.BeginSchoolBrowserLoginAsync(selectedSchool);
-                await browser.EnsureCoreWebView2Async();
-                browser.CoreWebView2.NavigationStarting += async (_, navigation) =>
-                {
-                    if (!Uri.TryCreate(navigation.Uri, UriKind.Absolute, out var callback) ||
-                        callback.Scheme != "schoology" ||
-                        !callback.Host.Equals("external_login_callback", StringComparison.OrdinalIgnoreCase))
-                        return;
-                    navigation.Cancel = true;
-                    var requestToken = HttpUtility.ParseQueryString(callback.Query).Get("request_token");
-                    if (string.IsNullOrWhiteSpace(requestToken))
-                    {
-                        status.Text = "Schoology returned an invalid sign-in callback. Please try again.";
-                        continueButton.IsEnabled = true;
-                        return;
-                    }
-                    try
-                    {
-                        status.Text = "Verifying your Schoology account…";
-                        _session = await _auth.CompleteSchoolBrowserSignInAsync(requestToken);
-                        ShowHome();
-                    }
-                    catch (Exception ex)
-                    {
-                        status.Text = ex.Message;
-                        continueButton.IsEnabled = true;
-                    }
-                };
                 search.Visibility = Visibility.Collapsed;
                 continueButton.Visibility = Visibility.Collapsed;
-                browser.Visibility = Visibility.Visible;
-                status.Text = "Complete sign-in with your school. Your password is entered only on the school sign-in page.";
-                browser.Source = new Uri(request.AuthorizationUrl);
+                await OpenRemoteSchoolLoginAsync(selectedSchool, browser, status, search);
             }
             catch (Exception ex)
             {
@@ -580,9 +574,44 @@ public sealed partial class MainWindow : Window
         var username = new TextBox { Header = "Username or email", PlaceholderText = "Enter your username or email" };
         var password = new PasswordBox { Header = "Password", PlaceholderText = "Enter your password" };
         var status = Text("", 13);
+        var browser = new WebView2 { MinHeight = 420, Visibility = Visibility.Collapsed };
+        var credentialForm = new StackPanel { Spacing = 14 };
         var signIn = new Button { Content = "Sign in", MinHeight = 44, HorizontalAlignment = HorizontalAlignment.Stretch };
         signIn.Click += async (_, _) =>
         {
+            var enteredUsername = username.Text.Trim();
+            var at = enteredUsername.LastIndexOf('@');
+            var emailDomain = at > 0 && at < enteredUsername.Length - 1
+                ? enteredUsername[(at + 1)..].Trim().ToLowerInvariant()
+                : string.Empty;
+            var isLausdDomain = emailDomain == "lausd.net" ||
+                emailDomain.EndsWith(".lausd.net", StringComparison.Ordinal) ||
+                emailDomain == "lauds.net" ||
+                emailDomain.EndsWith(".lauds.net", StringComparison.Ordinal);
+
+            if (isLausdDomain)
+            {
+                var suggestedUrl = "https://lms.lausd.net";
+                var dialog = new ContentDialog
+                {
+                    Title = "Your school uses SSO/Remote Authentication",
+                    Content = "Your school is currently using SSO/Remote Authentication. Did you mean to log in from " + suggestedUrl + "?",
+                    PrimaryButtonText = "Continue",
+                    CloseButtonText = "Cancel",
+                    DefaultButton = ContentDialogButton.Primary,
+                    XamlRoot = _root.XamlRoot
+                };
+                var choice = await dialog.ShowAsync();
+                if (choice == ContentDialogResult.Primary)
+                {
+                    var remoteSchool = new SchoologyAuthService.School(
+                        "Los Angeles Unified School District", string.Empty,
+                        "remote_auth", suggestedUrl, "lausd.net");
+                    await OpenRemoteSchoolLoginAsync(remoteSchool, browser, status, credentialForm);
+                }
+                return;
+            }
+
             signIn.IsEnabled = false;
             status.Text = "Signing in and verifying your Schoology profile…";
             try
@@ -593,10 +622,65 @@ public sealed partial class MainWindow : Window
             }
             catch (Exception ex) { status.Text = ex.Message; signIn.IsEnabled = true; }
         };
-        content.Children.Add(username);
-        content.Children.Add(password);
-        content.Children.Add(signIn);
+        credentialForm.Children.Add(username);
+        credentialForm.Children.Add(password);
+        credentialForm.Children.Add(signIn);
+        content.Children.Add(credentialForm);
         content.Children.Add(status);
+        content.Children.Add(browser);
+    }
+
+    private async Task OpenRemoteSchoolLoginAsync(
+        SchoologyAuthService.School school,
+        WebView2 browser,
+        TextBlock status,
+        UIElement credentialForm)
+    {
+        status.Text = "Preparing secure school sign-in…";
+        try
+        {
+            var request = await _auth.BeginSchoolBrowserLoginAsync(school);
+            await browser.EnsureCoreWebView2Async();
+            browser.CoreWebView2.NavigationStarting += async (_, navigation) =>
+            {
+                if (!Uri.TryCreate(navigation.Uri, UriKind.Absolute, out var callback) ||
+                    callback.Scheme != "schoology" ||
+                    !callback.Host.Equals("external_login_callback", StringComparison.OrdinalIgnoreCase))
+                    return;
+
+                navigation.Cancel = true;
+                var requestToken = HttpUtility.ParseQueryString(callback.Query).Get("request_token");
+                if (string.IsNullOrWhiteSpace(requestToken))
+                {
+                    status.Text = "Schoology returned an invalid sign-in callback. Please try again.";
+                    return;
+                }
+
+                try
+                {
+                    status.Text = "Verifying your Schoology account…";
+                    _session = await _auth.CompleteSchoolBrowserSignInAsync(requestToken);
+                    ShowHome();
+                }
+                catch (Exception ex)
+                {
+                    status.Text = ex.Message;
+                    credentialForm.Visibility = Visibility.Visible;
+                    browser.Visibility = Visibility.Collapsed;
+                }
+            };
+
+            credentialForm.Visibility = Visibility.Collapsed;
+            browser.Visibility = Visibility.Visible;
+            status.Text = "Complete sign-in with your school. Your password is entered only on the school sign-in page.";
+            browser.Source = new Uri(request.AuthorizationUrl);
+        }
+        catch (Exception ex)
+        {
+            status.Text = ex.Message;
+            credentialForm.Visibility = Visibility.Visible;
+            browser.Visibility = Visibility.Collapsed;
+        }
     }
 
     private void ShowQrSignInPage()
@@ -669,11 +753,37 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private void ShowSignInHelpPage()
+    private async void ShowSignInHelpPage()
     {
-        CreateLoginSubpage("Sign-in help", "Choose the sign-in method provided by your school.", out var content);
-        content.Children.Add(Text("If your school uses a district sign-in page, choose “Sign in through my school” and select your school. If you have a personal Schoology account, choose “Sign in with my account”. You can also scan a Schoology QR sign-in code.", 15));
-        content.Children.Add(Action("Back to sign-in", (_, _) => ShowLogin()));
+        // Match classic port.28: this action opens the official Schoology
+        // student mobile sign-in help article in the system browser.
+        var helpUri = new Uri("https://docs.powerschool.com/SGYH/en/students/schoology-mobile-apps/logging-into-the-schoology-mobile-app-students");
+        try
+        {
+            var launched = await Launcher.LaunchUriAsync(helpUri);
+            if (!launched)
+            {
+                var dialog = new ContentDialog
+                {
+                    Title = "Unable to open sign-in help",
+                    Content = "Windows could not open the Schoology sign-in help page.",
+                    CloseButtonText = "OK",
+                    XamlRoot = _root.XamlRoot
+                };
+                await dialog.ShowAsync();
+            }
+        }
+        catch (Exception ex)
+        {
+            var dialog = new ContentDialog
+            {
+                Title = "Unable to open sign-in help",
+                Content = ex.Message,
+                CloseButtonText = "OK",
+                XamlRoot = _root.XamlRoot
+            };
+            await dialog.ShowAsync();
+        }
     }
 
     private async Task RestoreSavedSessionAsync()

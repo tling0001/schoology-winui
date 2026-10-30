@@ -130,12 +130,27 @@ internal sealed class SchoologyAuthService
         return session;
     }
 
+    private static IReadOnlyList<PasswordCredential> FindVaultCredentials(PasswordVault vault)
+    {
+        try
+        {
+            return vault.FindAllByResource(VaultResource);
+        }
+        catch (Exception ex) when ((uint)ex.HResult == 0x80070490)
+        {
+            // PasswordVault uses HRESULT 0x80070490 (Element not found) when
+            // the resource has no saved credentials. An empty vault is normal
+            // on first sign-in and must not prevent adding the first session.
+            return Array.Empty<PasswordCredential>();
+        }
+    }
+
     public async Task<Session?> RestoreSessionAsync(CancellationToken cancellationToken = default)
     {
         try
         {
             var vault = new PasswordVault();
-            var credential = vault.FindAllByResource(VaultResource).FirstOrDefault();
+            var credential = FindVaultCredentials(vault).FirstOrDefault();
             if (credential is null) return null;
             credential.RetrievePassword();
             using var document = JsonDocument.Parse(credential.Password);
@@ -159,7 +174,7 @@ internal sealed class SchoologyAuthService
         try
         {
             var vault = new PasswordVault();
-            foreach (var credential in vault.FindAllByResource(VaultResource)) vault.Remove(credential);
+            foreach (var credential in FindVaultCredentials(vault)) vault.Remove(credential);
         }
         catch { }
     }
@@ -276,7 +291,7 @@ internal sealed class SchoologyAuthService
     private static void SaveSession(Session session)
     {
         var vault = new PasswordVault();
-        foreach (var old in vault.FindAllByResource(VaultResource)) vault.Remove(old);
+        foreach (var old in FindVaultCredentials(vault)) vault.Remove(old);
         var json = JsonSerializer.Serialize(new { token = session.Token, secret = session.Secret, userId = session.UserId });
         vault.Add(new PasswordCredential(VaultResource, session.UserId.ToString(CultureInfo.InvariantCulture), json));
     }
