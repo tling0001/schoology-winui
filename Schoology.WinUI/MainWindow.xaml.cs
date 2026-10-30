@@ -912,7 +912,7 @@ public sealed partial class MainWindow : Window
         try
         {
             using var request = new HttpRequestMessage(HttpMethod.Get,
-                "https://api.github.com/repos/tling0001/schoology-for-desktop-port/releases/latest");
+                "https://api.github.com/repos/tling0001/schoology-winui/releases/latest");
             request.Headers.TryAddWithoutValidation("User-Agent", "Schoology-WinUI");
             using var response = await ReleaseNotesClient.SendAsync(request);
             if (!response.IsSuccessStatusCode) return;
@@ -986,11 +986,18 @@ public sealed partial class MainWindow : Window
         shell.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
 
         var nativeTitleBar = AppWindow.TitleBar;
+        // Keep the custom title bar at the same fixed height as the native
+        // Tall caption-button area. Without an explicit Height, this Grid
+        // stretches over the entire shell and vertically centers its controls
+        // in the window instead of in the title bar.
         var titleBar = new Grid
         {
+            Height = 48,
+            MinHeight = 48,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            VerticalAlignment = VerticalAlignment.Top,
             Background = new SolidColorBrush(Colors.Transparent),
-            Padding = new Thickness(16, 0, Math.Max(12, nativeTitleBar.RightInset + 12), 0),
-            MinHeight = 48
+            Padding = new Thickness(16, 0, Math.Max(12, nativeTitleBar.RightInset + 12), 0)
         };
         titleBar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto }); // Drawer toggle
         titleBar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto }); // Schoology brand
