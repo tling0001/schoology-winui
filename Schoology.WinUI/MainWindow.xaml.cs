@@ -40,6 +40,8 @@ public sealed partial class MainWindow : Window
     private QrCameraScanner? _qrScanner;
     private MediaPlayer? _qrPlayer;
     private static readonly string WindowStatePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Schoology", "window-state.json");
+    private static readonly string ReleaseNotesStatePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Schoology", "release-notes-version.txt");
+    private static readonly HttpClient ReleaseNotesClient = new();
     private bool _restoringWindowState;
 
     public MainWindow()
@@ -77,7 +79,8 @@ public sealed partial class MainWindow : Window
                 ShowLogin();
                 App.WriteStartupLog("Login screen created; beginning saved-session restoration.");
                 await RestoreSavedSessionAsync();
-                App.WriteStartupLog("Startup session restoration sequence completed.");
+                await CheckAndShowReleaseNotesAsync();
+                App.WriteStartupLog("Startup session restoration and release-notes sequence completed.");
             }
             catch (Exception ex)
             {
@@ -904,6 +907,66 @@ public sealed partial class MainWindow : Window
         }
     }
 
+    private async Task CheckAndShowReleaseNotesAsync()
+    {
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get,
+                "https://api.github.com/repos/tling0001/schoology-for-desktop-port/releases/latest");
+            request.Headers.TryAddWithoutValidation("User-Agent", "Schoology-WinUI");
+            using var response = await ReleaseNotesClient.SendAsync(request);
+            if (!response.IsSuccessStatusCode) return;
+
+            using var release = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+            var root = release.RootElement;
+            var tag = ProfileValue(root, "tag_name");
+            var body = ProfileValue(root, "body");
+            if (string.IsNullOrWhiteSpace(tag) || string.IsNullOrWhiteSpace(body)) return;
+
+            var previouslyShown = File.Exists(ReleaseNotesStatePath)
+                ? await File.ReadAllTextAsync(ReleaseNotesStatePath) : string.Empty;
+            if (string.Equals(previouslyShown.Trim(), tag, StringComparison.Ordinal)) return;
+
+            var notes = new StackPanel { Spacing = 8 };
+            foreach (var line in body.Replace("\r", string.Empty).Split('\n'))
+            {
+                if (string.IsNullOrWhiteSpace(line) || line.StartsWith("## [", StringComparison.Ordinal)) continue;
+                TextBlock paragraph;
+                if (line.StartsWith("### ", StringComparison.Ordinal))
+                    paragraph = Text(line[4..].TrimEnd(':'), 16, true);
+                else if (line.StartsWith("- ", StringComparison.Ordinal))
+                    paragraph = Text("• " + line[2..], 13);
+                else
+                    paragraph = Text(line, 13);
+                paragraph.Foreground = ThemeBrush("SchoologyTextBrush");
+                notes.Children.Add(paragraph);
+            }
+
+            var dialog = new ContentDialog
+            {
+                Title = $"What’s new in Schoology {tag}",
+                Content = new ScrollViewer
+                {
+                    Content = notes,
+                    MaxHeight = 520,
+                    VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+                    HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled
+                },
+                CloseButtonText = "Got it",
+                XamlRoot = _root.XamlRoot
+            };
+            await dialog.ShowAsync();
+
+            Directory.CreateDirectory(Path.GetDirectoryName(ReleaseNotesStatePath)!);
+            await File.WriteAllTextAsync(ReleaseNotesStatePath, tag);
+        }
+        catch (Exception ex)
+        {
+            // Release notes are best-effort: offline startup must remain unaffected.
+            App.WriteStartupLog("Could not retrieve or display the latest Schoology release notes.", ex);
+        }
+    }
+
     private async void OpenDistrictSignInAsync()
     {
         var dialog = new ContentDialog
@@ -929,17 +992,19 @@ public sealed partial class MainWindow : Window
             Padding = new Thickness(16, 0, Math.Max(12, nativeTitleBar.RightInset + 12), 0),
             MinHeight = 48
         };
-        titleBar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        titleBar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        titleBar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        titleBar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto }); // Drawer toggle
+        titleBar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto }); // Schoology brand
+        titleBar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) }); // Drag region / page title
+        titleBar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto }); // Commands
         var brand = new Image { Width = 112, Height = 30, Stretch = Microsoft.UI.Xaml.Media.Stretch.Uniform,
             VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Left };
+        Grid.SetColumn(brand, 1);
         titleBar.Children.Add(brand);
         _ = SetEmbeddedImageAsync(brand, "Schoology.WinUI.Assets.logo_schoology.png");
         var caption = Text(section == "Recent Activity" ? "Home" : section, 13, true);
         caption.Foreground = ThemeBrush("SchoologyMutedTextBrush");
         caption.HorizontalAlignment = HorizontalAlignment.Center;
-        Grid.SetColumn(caption, 1);
+        Grid.SetColumn(caption, 2);
         titleBar.Children.Add(caption);
         var commands = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, VerticalAlignment = VerticalAlignment.Center };
         var searchButton = Action("Search", (_, _) => ShowSearch());
@@ -948,10 +1013,10 @@ public sealed partial class MainWindow : Window
         AutomationProperties.SetAutomationId(createButton, "TitleBarCreateButton");
         commands.Children.Add(searchButton);
         commands.Children.Add(createButton);
-        Grid.SetColumn(commands, 2);
+        Grid.SetColumn(commands, 3);
         titleBar.Children.Add(commands);
         shell.Children.Add(titleBar);
-        SetTitleBar(titleBar);
+        SetTitleBar(caption);
         // AppWindowTitleBar exposes inset values, not a Changed event.
         titleBar.Padding = new Thickness(16, 0, Math.Max(12, nativeTitleBar.RightInset + 12), 0);
 
@@ -961,24 +1026,40 @@ public sealed partial class MainWindow : Window
             IsPaneOpen = false,
             IsBackButtonVisible = NavigationViewBackButtonVisible.Collapsed,
             IsSettingsVisible = false,
-            IsPaneToggleButtonVisible = true,
+            IsPaneToggleButtonVisible = false,
             OpenPaneLength = 304,
             CompactPaneLength = 64,
-            Foreground = Brush("#FFFFFFFF"),
+            Foreground = ThemeBrush("SchoologyTextBrush"),
             CompactModeThresholdWidth = 760,
             ExpandedModeThresholdWidth = 1120,
             Background = new SolidColorBrush(Colors.Transparent),
             Content = null
         };
         // WinUI 3 styles the NavigationView pane through theme resources rather than a PaneBackground property.
-        var drawerBrush = new AcrylicBrush { TintColor = Microsoft.UI.ColorHelper.FromArgb(245, 0, 33, 55),
-            TintOpacity = 0.92, FallbackColor = Microsoft.UI.ColorHelper.FromArgb(255, 0, 33, 55) };
-        nav.Resources["NavigationViewDefaultPaneBackground"] = drawerBrush;
-        nav.Resources["NavigationViewExpandedPaneBackground"] = drawerBrush;
-        nav.Resources["NavigationViewCompactPaneBackground"] = drawerBrush;
-        nav.Resources["NavigationViewItemForeground"] = Brush("#FFFFFFFF");
-        nav.Resources["NavigationViewItemForegroundPointerOver"] = Brush("#FFFFFFFF");
-        nav.Resources["NavigationViewItemForegroundSelected"] = Brush("#FFFFFFFF");
+        // Keep the NavigationView pane transparent so the Window Mica material
+        // remains visible in both compact and expanded states.
+        var paneMaterial = new SolidColorBrush(Colors.Transparent);
+        nav.Resources["NavigationViewDefaultPaneBackground"] = paneMaterial;
+        nav.Resources["NavigationViewExpandedPaneBackground"] = paneMaterial;
+        nav.Resources["NavigationViewCompactPaneBackground"] = paneMaterial;
+        nav.Resources["NavigationViewItemForeground"] = ThemeBrush("SchoologyTextBrush");
+        nav.Resources["NavigationViewItemForegroundPointerOver"] = ThemeBrush("SchoologyTextBrush");
+        nav.Resources["NavigationViewItemForegroundSelected"] = ThemeBrush("SchoologyTextBrush");
+        var drawerToggle = new Button
+        {
+            Content = new FontIcon { Glyph = "\uE700", FontSize = 17 },
+            Width = 40, Height = 40, Padding = new Thickness(0),
+            Background = new SolidColorBrush(Colors.Transparent),
+            BorderThickness = new Thickness(0),
+            Foreground = ThemeBrush("SchoologyTextBrush"),
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        AutomationProperties.SetName(drawerToggle, "Toggle navigation pane");
+        AutomationProperties.SetAutomationId(drawerToggle, "TitleBarNavigationToggle");
+        drawerToggle.Click += (_, _) => nav.IsPaneOpen = !nav.IsPaneOpen;
+        Grid.SetColumn(drawerToggle, 0);
+        titleBar.Children.Insert(0, drawerToggle);
+
         var animationsEnabled = new UISettings().AnimationsEnabled;
         var initialTransition = new SlideNavigationTransitionInfo { Effect = SlideNavigationTransitionEffect.FromRight };
         var sectionFrame = new Frame
@@ -1025,6 +1106,7 @@ public sealed partial class MainWindow : Window
             if (entry.Name == "Home")
                 nav.MenuItems.Add(new NavigationViewItemSeparator());
             var item = new NavigationViewItem { Content = entry.Name == "Upcoming" ? "Calendar" : entry.Name, Tag = entry.Name, Icon = new SymbolIcon(entry.Icon) };
+            item.SelectsOnInvoked = true;
             if (entry.Name is "Courses" or "Groups") item.IsExpanded = false;
             nav.MenuItems.Add(item);
             if (entry.Name == (section == "Recent Activity" ? "Home" : section)) nav.SelectedItem = item;
@@ -1127,6 +1209,7 @@ public sealed partial class MainWindow : Window
         {
             if (parent.Tag is not string tag || tag is not ("Courses" or "Groups")) continue;
             parent.MenuItems.Clear();
+            parent.SelectsOnInvoked = true;
             var entities = tag == "Groups" ? _groups : _courses;
             foreach (var entity in entities)
             {
@@ -1398,8 +1481,37 @@ public sealed partial class MainWindow : Window
             Background = new SolidColorBrush(Colors.Transparent) };
         AutomationProperties.SetAutomationId(navigation, kind + "ProfileNavigation");
         foreach (var tab in tabs)
-            navigation.Items.Add(new ListViewItem { Content = tab, Tag = tab,
-                Padding = new Thickness(14, 10, 14, 10) });
+        {
+            var tabRow = new Grid { ColumnSpacing = 12 };
+            tabRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(28) });
+            tabRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            var tabIcon = new SymbolIcon(tab switch
+            {
+                "Materials" => Symbol.Folder,
+                "Updates" => Symbol.Message,
+                "Grades" => Symbol.Calculator,
+                "Members" => Symbol.People,
+                "Discussions" => Symbol.Comment,
+                "Resources" => Symbol.Folder,
+                "Info" => Symbol.Help,
+                _ => Symbol.Page
+            })
+            {
+                Width = 22, Height = 22,
+                Foreground = ThemeBrush("SchoologyBlueBrush"),
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            tabRow.Children.Add(tabIcon);
+            var tabLabel = Text(tab, 14, true);
+            tabLabel.Foreground = ThemeBrush("SchoologyTextBrush");
+            Grid.SetColumn(tabLabel, 1);
+            tabRow.Children.Add(tabLabel);
+            navigation.Items.Add(new ListViewItem
+            {
+                Content = tabRow, Tag = tab,
+                Padding = new Thickness(14, 10, 14, 10)
+            });
+        }
         Grid.SetRow(navigation, 1);
         sidebar.Children.Add(navigation);
 
@@ -1513,7 +1625,9 @@ public sealed partial class MainWindow : Window
         {
             var session = _session;
             if (session is null || entityId <= 0) throw new InvalidOperationException("Select a Schoology item after signing in.");
-            using var document = await _api.GetEntityTabAsync(session, kind, entityId, tab);
+            using var document = tab == "Materials" && kind == "Courses"
+                ? await _api.GetCourseFolderAsync(session, entityId, 0)
+                : await _api.GetEntityTabAsync(session, kind, entityId, tab);
             if (kind == "School Profile" && tab == "Info")
             {
                 body.Children.Remove(status);
@@ -1986,15 +2100,7 @@ public sealed partial class MainWindow : Window
         var detail = new Grid { Background = ThemeBrush("SchoologySurfaceBrush") };
         var detailFrame = new Frame { Background = new SolidColorBrush(Colors.Transparent) };
         detail.Children.Add(detailFrame);
-        var placeholder = new StackPanel { Spacing = 8, HorizontalAlignment = HorizontalAlignment.Center,
-            VerticalAlignment = VerticalAlignment.Center, MaxWidth = 420 };
-        placeholder.Children.Add(new FontIcon { Glyph = "\uE715", FontSize = 36,
-            Foreground = ThemeBrush("SchoologyMutedTextBrush"), HorizontalAlignment = HorizontalAlignment.Center });
-        placeholder.Children.Add(Text("Select a message", 19, true));
-        var placeholderText = Text("Your message content will appear here.", 13);
-        placeholderText.Foreground = ThemeBrush("SchoologyMutedTextBrush");
-        placeholder.Children.Add(placeholderText);
-        detail.Children.Add(placeholder);
+        // The detail Frame exclusively owns its content; never parent a placeholder in both places.
         Grid.SetColumn(left, 0); Grid.SetColumn(detail, 1);
         root.Children.Add(left); root.Children.Add(detail);
 
@@ -2002,6 +2108,7 @@ public sealed partial class MainWindow : Window
         IReadOnlyList<SchoologyApiRecord> sentRecords = [];
         var currentMode = "Inbox";
         bool loading = false;
+        bool messageSelected = false;
 
         bool IsUnread(SchoologyApiRecord record)
         {
@@ -2025,14 +2132,15 @@ public sealed partial class MainWindow : Window
 
         void ShowDetailPlaceholder(string title, string description)
         {
-            placeholder.Children.Clear();
+            messageSelected = false;
+            var placeholder = new StackPanel { Spacing = 8, HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center, MaxWidth = 420 };
             placeholder.Children.Add(new FontIcon { Glyph = "\uE715", FontSize = 36,
                 Foreground = ThemeBrush("SchoologyMutedTextBrush"), HorizontalAlignment = HorizontalAlignment.Center });
             placeholder.Children.Add(Text(title, 19, true));
             var message = Text(description, 13);
             message.Foreground = ThemeBrush("SchoologyMutedTextBrush");
             placeholder.Children.Add(message);
-            placeholder.Visibility = Visibility.Visible;
             NavigateShellFrame(detailFrame, placeholder, SlideNavigationTransitionEffect.FromLeft);
         }
 
@@ -2140,7 +2248,7 @@ public sealed partial class MainWindow : Window
                 await ShowApiErrorAsync("Unable to open message", "Schoology did not return a valid message ID.");
                 return;
             }
-            placeholder.Visibility = Visibility.Collapsed;
+            messageSelected = true;
             var loadingPanel = new StackPanel { Spacing = 10, Margin = new Thickness(24) };
             loadingPanel.Children.Add(new ProgressRing { IsActive = true, Width = 28, Height = 28 });
             loadingPanel.Children.Add(Text("Loading message…", 13));
@@ -2209,9 +2317,10 @@ public sealed partial class MainWindow : Window
         root.SizeChanged += (_, args) =>
         {
             var narrow = args.NewSize.Width < 760;
-            left.Visibility = narrow && detailFrame.Content is not null ? Visibility.Collapsed : Visibility.Visible;
-            detail.Visibility = narrow && detailFrame.Content is null ? Visibility.Collapsed : Visibility.Visible;
+            left.Visibility = narrow && messageSelected ? Visibility.Collapsed : Visibility.Visible;
+            detail.Visibility = narrow && !messageSelected ? Visibility.Collapsed : Visibility.Visible;
         };
+        ShowDetailPlaceholder("Select a message", "Choose a message from the list to read it.");
         _ = LoadMailboxAsync("Inbox");
         return root;
     }

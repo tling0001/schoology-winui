@@ -16,6 +16,8 @@
           <SolidColorBrush x:Key="SchoologySurfaceBrush" Color="#FFFFFFFF" />
           <SolidColorBrush x:Key="SchoologySubtleBrush" Color="#FFF2F5F7" />
           <SolidColorBrush x:Key="SchoologyDividerBrush" Color="#FFCBD5DE" />          <SolidColorBrush x:Key="SchoologyTextBrush" Color="#FF17212B" />          <SolidColorBrush x:Key="SchoologyMutedTextBrush" Color="#FF465563" />          <SolidColorBrush x:Key="SystemControlForegroundBaseHighBrush" Color="#FF17212B" />          <SolidColorBrush x:Key="SystemControlForegroundBaseMediumBrush" Color="#FF465563" />          <SolidColorBrush x:Key="TextControlForeground" Color="#FF17212B" />          <SolidColorBrush x:Key="TextControlPlaceholderForeground" Color="#FF596875" />          <SolidColorBrush x:Key="NavigationViewItemForeground" Color="#FF17212B" />
+          <SolidColorBrush x:Key="NavigationViewItemForegroundPointerOver" Color="#FF17212B" />
+          <SolidColorBrush x:Key="NavigationViewItemForegroundSelected" Color="#FF17212B" />
         </ResourceDictionary>
         <ResourceDictionary x:Key="Dark">
           <SolidColorBrush x:Key="SchoologyBlueBrush" Color="#FF5B9BD5" />
@@ -23,6 +25,8 @@
           <SolidColorBrush x:Key="SchoologySurfaceBrush" Color="#FF202428" />
           <SolidColorBrush x:Key="SchoologySubtleBrush" Color="#FF292F34" />
           <SolidColorBrush x:Key="SchoologyDividerBrush" Color="#FF46515B" />          <SolidColorBrush x:Key="SchoologyTextBrush" Color="#FFF3F6F8" />          <SolidColorBrush x:Key="SchoologyMutedTextBrush" Color="#FFB8C4CE" />          <SolidColorBrush x:Key="SystemControlForegroundBaseHighBrush" Color="#FFF3F6F8" />          <SolidColorBrush x:Key="SystemControlForegroundBaseMediumBrush" Color="#FFB8C4CE" />          <SolidColorBrush x:Key="TextControlForeground" Color="#FFF3F6F8" />          <SolidColorBrush x:Key="TextControlPlaceholderForeground" Color="#FFB8C4CE" />          <SolidColorBrush x:Key="NavigationViewItemForeground" Color="#FFF3F6F8" />
+          <SolidColorBrush x:Key="NavigationViewItemForegroundPointerOver" Color="#FFF3F6F8" />
+          <SolidColorBrush x:Key="NavigationViewItemForegroundSelected" Color="#FFF3F6F8" />
         </ResourceDictionary>
         <ResourceDictionary x:Key="HighContrast">
           <SolidColorBrush x:Key="SchoologyBlueBrush" Color="{ThemeResource SystemColorHighlightColor}" />
@@ -30,6 +34,9 @@
           <SolidColorBrush x:Key="SchoologySurfaceBrush" Color="{ThemeResource SystemColorWindowColor}" />
           <SolidColorBrush x:Key="SchoologySubtleBrush" Color="{ThemeResource SystemColorWindowColor}" />
           <SolidColorBrush x:Key="SchoologyDividerBrush" Color="{ThemeResource SystemColorWindowTextColor}" />          <SolidColorBrush x:Key="SchoologyTextBrush" Color="{ThemeResource SystemColorWindowTextColor}" />          <SolidColorBrush x:Key="SchoologyMutedTextBrush" Color="{ThemeResource SystemColorWindowTextColor}" />
+          <SolidColorBrush x:Key="NavigationViewItemForeground" Color="{ThemeResource SystemColorWindowTextColor}" />
+          <SolidColorBrush x:Key="NavigationViewItemForegroundPointerOver" Color="{ThemeResource SystemColorWindowTextColor}" />
+          <SolidColorBrush x:Key="NavigationViewItemForegroundSelected" Color="{ThemeResource SystemColorWindowTextColor}" />
         </ResourceDictionary>
       </ResourceDictionary.ThemeDictionaries>
     </ResourceDictionary>
