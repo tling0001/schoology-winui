@@ -8,6 +8,7 @@ using Microsoft.UI.Xaml.Navigation;
 using Microsoft.UI.Xaml.Media.Animation;
 using System.Web;
 using System.Text;
+using System.Text.Json;
 using System.Collections.ObjectModel;
 using Windows.Media.Playback;
 using System.Runtime.InteropServices;
@@ -39,6 +40,8 @@ public sealed partial class MainWindow : Window
     private SchoologyAuthService.Session? _session;
     private QrCameraScanner? _qrScanner;
     private MediaPlayer? _qrPlayer;
+    private static readonly string WindowStatePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Schoology", "window-state.json");
+    private bool _restoringWindowState;
 
     public MainWindow()
     {
@@ -56,10 +59,10 @@ public sealed partial class MainWindow : Window
         AppWindow.TitleBar.ButtonInactiveBackgroundColor = Colors.Transparent;
         try { SystemBackdrop = new MicaBackdrop(); } catch { }
 
-        App.WriteStartupLog("Setting initial window size.");
-        SetWindowSize(520, 360);
+        RestoreWindowState();
+        AppWindow.Changed += (_, _) => SaveWindowState();
         _ = SetWindowIconAsync();
-        App.WriteStartupLog("Initial splash window size and native window icon configured.");
+        App.WriteStartupLog("Previous window bounds and native window icon configured.");
 
         App.WriteStartupLog("Creating splash screen.");
         ShowSplash();
@@ -72,7 +75,6 @@ public sealed partial class MainWindow : Window
             try
             {
                 App.WriteStartupLog("Splash timer tick; switching to login.");
-                SetWindowSize(1260, 820);
                 ShowLogin();
                 App.WriteStartupLog("Login screen created; beginning saved-session restoration.");
                 await RestoreSavedSessionAsync();
@@ -104,6 +106,57 @@ public sealed partial class MainWindow : Window
             AppWindow.Resize(new SizeInt32((int)(widthDip * scale), (int)(heightDip * scale)));
         }
         catch { }
+    }
+
+
+    private sealed record SavedWindowState(int Width, int Height, bool Maximized);
+    private SizeInt32 _lastNormalWindowSize;
+
+    private void RestoreWindowState()
+    {
+        try
+        {
+            _restoringWindowState = true;
+            SavedWindowState? saved = File.Exists(WindowStatePath)
+                ? JsonSerializer.Deserialize<SavedWindowState>(File.ReadAllText(WindowStatePath)) : null;
+            if (saved is { Width: >= 640, Height: >= 480 })
+            {
+                _lastNormalWindowSize = new SizeInt32(saved.Width, saved.Height);
+                AppWindow.Resize(_lastNormalWindowSize);
+                if (saved.Maximized && AppWindow.Presenter is OverlappedPresenter presenter) presenter.Maximize();
+                App.WriteStartupLog($"Restored previous window size {saved.Width}x{saved.Height}px; maximized={saved.Maximized}.");
+            }
+            else
+            {
+                SetWindowSize(1260, 820);
+                var hwnd = Win32Interop.GetWindowFromWindowId(AppWindow.Id);
+                var scale = GetDpiForWindow(hwnd) / 96.0;
+                _lastNormalWindowSize = new SizeInt32((int)(1260 * scale), (int)(820 * scale));
+            }
+        }
+        catch (Exception ex)
+        {
+            App.WriteStartupLog("Could not restore previous window state.", ex);
+            SetWindowSize(1260, 820);
+        }
+        finally { _restoringWindowState = false; }
+    }
+
+    private void SaveWindowState()
+    {
+        if (_restoringWindowState) return;
+        try
+        {
+            var maximized = AppWindow.Presenter is OverlappedPresenter presenter &&
+                presenter.State == OverlappedPresenterState.Maximized;
+            var size = AppWindow.Size;
+            if (!maximized && size.Width >= 640 && size.Height >= 480) _lastNormalWindowSize = size;
+            if (_lastNormalWindowSize.Width < 640 || _lastNormalWindowSize.Height < 480) return;
+            Directory.CreateDirectory(Path.GetDirectoryName(WindowStatePath)!);
+            File.WriteAllText(WindowStatePath, JsonSerializer.Serialize(
+                new SavedWindowState(_lastNormalWindowSize.Width, _lastNormalWindowSize.Height, maximized)));
+        }
+        catch (Exception ex) { App.WriteStartupLog("Could not persist window state.", ex); }
     }
 
     private static SolidColorBrush Brush(string color) => new(Microsoft.UI.ColorHelper.FromArgb(
@@ -905,13 +958,15 @@ public sealed partial class MainWindow : Window
 
         var nav = new NavigationView
         {
-            PaneDisplayMode = NavigationViewPaneDisplayMode.Left,
-            IsPaneOpen = true,
+            PaneDisplayMode = NavigationViewPaneDisplayMode.LeftMinimal,
+            IsPaneOpen = false,
             IsBackButtonVisible = NavigationViewBackButtonVisible.Collapsed,
             IsSettingsVisible = false,
             IsPaneToggleButtonVisible = true,
-            OpenPaneLength = 252,
+            OpenPaneLength = 304,
             CompactPaneLength = 64,
+            PaneBackground = Brush("#FF002137"),
+            Foreground = Brush("#FFFFFFFF"),
             CompactModeThresholdWidth = 760,
             ExpandedModeThresholdWidth = 1120,
             Background = new SolidColorBrush(Colors.Transparent),
@@ -932,15 +987,38 @@ public sealed partial class MainWindow : Window
         App.WriteStartupLog($"Initial Frame.Navigate completed for section '{section}'.");
         _sectionFrame = sectionFrame;
         nav.Content = sectionFrame;
+        var profileRow = new Grid { ColumnSpacing = 12, Padding = new Thickness(8, 12, 8, 12) };
+        profileRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(44) });
+        profileRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        var profileAvatar = new Image { Width = 40, Height = 40, Stretch = Microsoft.UI.Xaml.Media.Stretch.UniformToFill };
+        var profileName = _session is null ? "Profile" :
+            ProfileValue(_session.User, "name_display", "display_name", "name") ?? "My Profile";
+        var profilePicture = _session is null ? null :
+            ProfileValue(_session.User, "picture_url", "pictureUrl", "picture", "photo_url");
+        if (!string.IsNullOrWhiteSpace(profilePicture))
+            try { profileAvatar.Source = new BitmapImage(new Uri(NormalizeSchoologyImageUrl(profilePicture))); } catch { }
+        profileRow.Children.Add(new Border { Width = 40, Height = 40, CornerRadius = new CornerRadius(20),
+            Background = Brush("#FF526F8B"), Child = profileAvatar });
+        var profileLabels = new StackPanel { Spacing = 2, VerticalAlignment = VerticalAlignment.Center };
+        profileLabels.Children.Add(Text(profileName, 14, true));
+        profileLabels.Children.Add(Text("Schoology account", 11));
+        Grid.SetColumn(profileLabels, 1); profileRow.Children.Add(profileLabels);
+        nav.MenuItems.Add(new NavigationViewItem { Content = profileRow, Tag = "Profile" });
+        nav.MenuItems.Add(new NavigationViewItemSeparator());
+
         var items = new (string Name, Symbol Icon)[]
         {
-            ("Home", Symbol.Home), ("Upcoming", Symbol.Calendar), ("Courses", Symbol.Library),
-            ("Groups", Symbol.People), ("School Profile", Symbol.Home), ("Messages", Symbol.Mail),
-            ("Grades", Symbol.Page), ("Resources", Symbol.Folder), ("Profile", Symbol.Contact)
+            ("Messages", Symbol.Mail), ("Notifications", Symbol.Mail), ("Requests", Symbol.People),
+            ("Home", Symbol.Home), ("Courses", Symbol.Library), ("Groups", Symbol.People),
+            ("Resources", Symbol.Folder), ("Grades", Symbol.Page), ("Upcoming", Symbol.Calendar),
+            ("School Profile", Symbol.Home)
         };
         foreach (var entry in items)
         {
-            var item = new NavigationViewItem { Content = entry.Name, Tag = entry.Name, Icon = new SymbolIcon(entry.Icon) };
+            if (entry.Name == "Home")
+                nav.MenuItems.Add(new NavigationViewItemSeparator());
+            var item = new NavigationViewItem { Content = entry.Name == "Upcoming" ? "Calendar" : entry.Name, Tag = entry.Name, Icon = new SymbolIcon(entry.Icon) };
+            if (entry.Name is "Courses" or "Groups") item.IsExpanded = false;
             nav.MenuItems.Add(item);
             if (entry.Name == (section == "Recent Activity" ? "Home" : section)) nav.SelectedItem = item;
         }
@@ -952,9 +1030,21 @@ public sealed partial class MainWindow : Window
         });
         nav.SelectionChanged += (_, args) =>
         {
-            if (args.SelectedItem is not NavigationViewItem item || item.Tag is not string target) return;
-            if (target == "Sign out") { _auth.SignOut(); _session = null; _sectionFrame = null; ShowLogin(); }
-            else ShowHome(target == "Home" ? "Recent Activity" : target);
+            if (args.SelectedItem is not NavigationViewItem item) return;
+            if (item.Tag is string target && target.Contains(':'))
+            {
+                var parts = target.Split(':', 2);
+                if (long.TryParse(parts[1], out var id))
+                {
+                    var kind = parts[0] == "group" ? "Groups" : "Courses";
+                    var entity = (kind == "Groups" ? _groups : _courses).FirstOrDefault(candidate => candidate.Id == id);
+                    if (entity is not null) ShowThreePane(kind, entity);
+                }
+                return;
+            }
+            if (item.Tag is not string rootTarget) return;
+            if (rootTarget == "Sign out") { _auth.SignOut(); _session = null; _sectionFrame = null; ShowLogin(); }
+            else ShowHome(rootTarget == "Home" ? "Recent Activity" : rootTarget);
         };
         _appNavigation = nav;
         Grid.SetRow(nav, 1);
@@ -1013,6 +1103,7 @@ public sealed partial class MainWindow : Window
             foreach (var item in results[0]) _courses.Add(item);
             _groups.Clear();
             foreach (var item in results[1]) _groups.Add(item);
+            PopulateNavigationHierarchy();
             App.WriteStartupLog($"Loaded Schoology account collections: {_courses.Count} courses, {_groups.Count} groups.");
         }
         catch (Exception ex)
@@ -1021,36 +1112,78 @@ public sealed partial class MainWindow : Window
         }
     }
 
+
+    private void PopulateNavigationHierarchy()
+    {
+        if (_appNavigation is null) return;
+        foreach (var parent in _appNavigation.MenuItems.OfType<NavigationViewItem>())
+        {
+            if (parent.Tag is not string tag || tag is not ("Courses" or "Groups")) continue;
+            parent.MenuItems.Clear();
+            var entities = tag == "Groups" ? _groups : _courses;
+            foreach (var entity in entities)
+            {
+                parent.MenuItems.Add(new NavigationViewItem
+                {
+                    Content = entity.Name,
+                    Tag = (tag == "Groups" ? "group:" : "course:") + entity.Id,
+                    Icon = new SymbolIcon(tag == "Groups" ? Symbol.People : Symbol.Page),
+                    SelectsOnInvoked = true
+                });
+            }
+        }
+    }
+
     private UIElement BuildHomeSplitView(bool upcomingFirst)
     {
         var split = new SplitView
         {
-            DisplayMode = SplitViewDisplayMode.Inline,
-            IsPaneOpen = true,
-            OpenPaneLength = 420,
-            CompactPaneLength = 0,
-            PanePlacement = SplitViewPanePlacement.Left,
+            DisplayMode = SplitViewDisplayMode.Inline, IsPaneOpen = true, OpenPaneLength = 620,
+            CompactPaneLength = 0, PanePlacement = SplitViewPanePlacement.Left,
             Background = new SolidColorBrush(Colors.Transparent)
         };
-        var primary = new StackPanel { Spacing = 14, Margin = new Thickness(22, 18, 14, 18) };
-        var heading = new Grid();
-        heading.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        heading.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        heading.Children.Add(Text(upcomingFirst ? "Upcoming" : "Recent Activity", 22, true));
-        var toggle = Action("Hide pane", (_, _) => split.IsPaneOpen = !split.IsPaneOpen);
-        toggle.Padding = new Thickness(8, 4, 8, 4);
-        Grid.SetColumn(toggle, 1);
-        heading.Children.Add(toggle);
-        primary.Children.Add(heading);
-        var secondary = new StackPanel { Spacing = 14, Margin = new Thickness(20, 18, 24, 18) };
-        secondary.Children.Add(Text(upcomingFirst ? "Recent Activity" : "Upcoming", 22, true));
-        foreach (var item in upcomingFirst ? BuildUpcomingItems() : BuildRecentActivityItems()) primary.Children.Add(item);
-        foreach (var item in upcomingFirst ? BuildRecentActivityItems() : BuildUpcomingItems()) secondary.Children.Add(item);
-        split.Pane = new ScrollViewer { Content = primary, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
-        split.Content = new ScrollViewer { Content = secondary, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+        var left = new Grid { Margin = new Thickness(20, 14, 12, 16), RowSpacing = 12 };
+        left.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        left.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        left.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        var header = new Grid();
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        header.Children.Add(Text("Home", 23, true));
+        var hide = Action("Hide pane", (_, _) => split.IsPaneOpen = !split.IsPaneOpen);
+        hide.Padding = new Thickness(8, 4, 8, 4);
+        Grid.SetColumn(hide, 1); header.Children.Add(hide);
+        left.Children.Add(header);
+
+        var selector = new SelectorBar { HorizontalAlignment = HorizontalAlignment.Left };
+        var recent = new SelectorBarItem { Text = "Recent Activity" };
+        var dashboard = new SelectorBarItem { Text = "Course Dashboard" };
+        selector.Items.Add(recent); selector.Items.Add(dashboard); selector.SelectedItem = recent;
+        Grid.SetRow(selector, 1); left.Children.Add(selector);
+        var leftFrame = new Frame { Background = new SolidColorBrush(Colors.Transparent) };
+        Grid.SetRow(leftFrame, 2); left.Children.Add(leftFrame);
+        selector.SelectionChanged += (_, _) =>
+        {
+            if (selector.SelectedItem is not SelectorBarItem selected) return;
+            NavigateShellFrame(leftFrame, selected == dashboard ? BuildCourseDashboardContent() : BuildRecentActivityContent(),
+                SlideNavigationTransitionEffect.FromRight);
+        };
+        NavigateShellFrame(leftFrame, upcomingFirst ? BuildCourseDashboardContent() : BuildRecentActivityContent(),
+            SlideNavigationTransitionEffect.FromRight);
+        if (upcomingFirst) selector.SelectedItem = dashboard;
+        split.Pane = left;
+
+        var right = new Grid { Margin = new Thickness(14, 14, 20, 16), RowSpacing = 10 };
+        right.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        right.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        right.Children.Add(Text("Upcoming", 23, true));
+        var upcomingFrame = new Frame { Background = new SolidColorBrush(Colors.Transparent) };
+        Grid.SetRow(upcomingFrame, 1); right.Children.Add(upcomingFrame);
+        NavigateShellFrame(upcomingFrame, BuildUpcomingContent(), SlideNavigationTransitionEffect.FromRight);
+        split.Content = right;
         split.SizeChanged += (_, args) =>
         {
-            var narrow = args.NewSize.Width < 760;
+            var narrow = args.NewSize.Width < 900;
             split.DisplayMode = narrow ? SplitViewDisplayMode.Overlay : SplitViewDisplayMode.Inline;
             if (narrow && split.IsPaneOpen) split.IsPaneOpen = false;
             else if (!narrow && !split.IsPaneOpen) split.IsPaneOpen = true;
@@ -1059,18 +1192,105 @@ public sealed partial class MainWindow : Window
         return split;
     }
 
-    private IEnumerable<UIElement> BuildRecentActivityItems()
+    private UIElement BuildRecentActivityContent()
     {
-        yield return Text("Recent activity from courses and groups will appear here when the Schoology data provider is connected.", 14);
-        yield return Surface(ActivityItem("Recent Activity", "Activity feed", "Waiting for Schoology account data"));
-        yield return Surface(ActivityItem("Courses", "Course updates", "Waiting for Schoology account data"));
+        var panel = new StackPanel { Spacing = 10, Margin = new Thickness(4, 2, 10, 8) };
+        var status = Text("Loading recent Schoology activity…", 13);
+        panel.Children.Add(status);
+        _ = LoadRecentActivityAsync(panel, status);
+        return new ScrollViewer { Content = panel, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
     }
 
-    private IEnumerable<UIElement> BuildUpcomingItems()
+    private async Task LoadRecentActivityAsync(StackPanel panel, TextBlock status)
     {
-        yield return Text("Assignments and events will appear here when the Schoology data provider is connected.", 14);
-        yield return Surface(ActivityItem("Upcoming", "Assignments and events", "Waiting for Schoology account data"));
-        yield return Surface(ActivityItem("Calendar", "Due dates", "Waiting for Schoology account data"));
+        try
+        {
+            if (_session is null) throw new InvalidOperationException("Sign in to view recent activity.");
+            using var document = await _auth.GetApiJsonAsync(_session, "recent",
+                new Dictionary<string, string> { ["start"] = "0", ["limit"] = "30", ["with_attachments"] = "TRUE", ["richtext"] = "1" });
+            var records = SchoologyApiClient.ReadRecords(document.RootElement, "update", "updates", "update_list");
+            panel.Children.Remove(status);
+            if (records.Count == 0) { panel.Children.Add(Surface(Text("No recent activity was returned by Schoology."))); return; }
+            foreach (var record in records)
+            {
+                var card = new StackPanel { Spacing = 5 };
+                card.Children.Add(Text(ProfileValue(record.Data, "display_name", "author_name", "user_name", "name_display") ?? "Schoology", 12, true));
+                card.Children.Add(Text(record.Title, 15, true));
+                if (!string.IsNullOrWhiteSpace(record.Subtitle)) card.Children.Add(Text(record.Subtitle, 13));
+                var created = ProfileValue(record.Data, "created", "created_at", "timestamp");
+                if (!string.IsNullOrWhiteSpace(created)) card.Children.Add(Text(created, 11));
+                panel.Children.Add(Surface(card));
+            }
+        }
+        catch (Exception ex) { status.Text = $"Unable to load recent activity: {ex.Message}"; }
+    }
+
+    private UIElement BuildCourseDashboardContent()
+    {
+        var list = new ListView { SelectionMode = ListViewSelectionMode.None, IsItemClickEnabled = true,
+            HorizontalContentAlignment = HorizontalAlignment.Stretch };
+        AutomationProperties.SetAutomationId(list, "HomeCourseDashboardList");
+        if (_courses.Count == 0) list.Items.Add(new ListViewItem { Content = Text("No courses were returned for this account.", 13) });
+        foreach (var course in _courses)
+        {
+            var row = new Grid { ColumnSpacing = 12, Padding = new Thickness(8, 10, 8, 10) };
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(52) });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+                var image = new Border { Width = 48, Height = 48, CornerRadius = new CornerRadius(4),
+                Background = ThemeBrush("SchoologyBlueDarkBrush"),
+                Child = new TextBlock { Text = course.Name.Length > 0 ? course.Name[..1].ToUpperInvariant() : "C",
+                    FontSize = 22, Foreground = Brush("#FFFFFFFF"), HorizontalAlignment = HorizontalAlignment.Center,
+                    VerticalAlignment = VerticalAlignment.Center } };
+            if (!string.IsNullOrWhiteSpace(course.ImageUrl))
+            {
+                try { image.Child = new Image { Source = new BitmapImage(new Uri(NormalizeSchoologyImageUrl(course.ImageUrl))),
+                    Stretch = Microsoft.UI.Xaml.Media.Stretch.UniformToFill }; } catch { }
+            }
+            row.Children.Add(image);
+            var labels = new StackPanel { Spacing = 3, VerticalAlignment = VerticalAlignment.Center };
+            labels.Children.Add(Text(course.Name, 14, true));
+            if (!string.IsNullOrWhiteSpace(course.Subtitle)) labels.Children.Add(Text(course.Subtitle, 12));
+            Grid.SetColumn(labels, 1); row.Children.Add(labels);
+            list.Items.Add(new ListViewItem { Content = row, Tag = course });
+        }
+        list.ItemClick += (_, args) =>
+        {
+            if (args.ClickedItem is ListViewItem { Tag: SchoologyEntity course }) ShowThreePane("Courses", course);
+        };
+        return list;
+    }
+
+    private UIElement BuildUpcomingContent()
+    {
+        var panel = new StackPanel { Spacing = 8, Margin = new Thickness(2) };
+        var status = Text("Loading upcoming assignments and events…", 13);
+        panel.Children.Add(status);
+        _ = LoadUpcomingAsync(panel, status);
+        return new ScrollViewer { Content = panel, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+    }
+
+    private async Task LoadUpcomingAsync(StackPanel panel, TextBlock status)
+    {
+        try
+        {
+            if (_session is null) throw new InvalidOperationException("Sign in to view upcoming items.");
+            using var document = await _auth.GetApiJsonAsync(_session, $"users/{_session.UserId}/events",
+                new Dictionary<string, string> { ["start_date"] = DateTime.Now.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture), ["start"] = "0", ["limit"] = "50" });
+            var records = SchoologyApiClient.ReadRecords(document.RootElement, "event", "events");
+            panel.Children.Remove(status);
+            if (records.Count == 0) { panel.Children.Add(Surface(Text("Nothing upcoming was returned by Schoology."))); return; }
+            foreach (var record in records.OrderBy(item => ProfileValue(item.Data, "start", "start_time", "date") ?? ""))
+            {
+                var item = new StackPanel { Spacing = 4 };
+                var when = ProfileValue(record.Data, "start", "start_time", "date", "due");
+                if (!string.IsNullOrWhiteSpace(when)) item.Children.Add(Text(when, 11, true));
+                item.Children.Add(Text(record.Title, 14, true));
+                var course = ProfileValue(record.Data, "section_title", "course_title", "section_name");
+                if (!string.IsNullOrWhiteSpace(course)) item.Children.Add(Text(course, 12));
+                panel.Children.Add(Surface(item, new Thickness(12)));
+            }
+        }
+        catch (Exception ex) { status.Text = $"Unable to load upcoming items: {ex.Message}"; }
     }
 
     private static UIElement ActivityItem(string course, string title, string meta)
@@ -1101,13 +1321,13 @@ public sealed partial class MainWindow : Window
 
     private void ShowUpcoming() => ShowHome("Upcoming");
 
-    private void ShowThreePane(string kind)
+    private void ShowThreePane(string kind, SchoologyEntity? initialEntity = null)
     {
         _page = kind;
         _section = kind;
-        _selectedEntity = string.Empty;
-        _selectedEntityId = 0;
-        var page = BuildThreePane(kind);
+        if (initialEntity is not null) { _selectedEntity = initialEntity.Name; _selectedEntityId = initialEntity.Id; }
+        else { _selectedEntity = string.Empty; _selectedEntityId = 0; }
+        var page = BuildThreePane(kind, initialEntity);
         if (_sectionFrame is not null)
             NavigateMainSection(page, kind);
         else
@@ -1123,7 +1343,7 @@ public sealed partial class MainWindow : Window
         return new[] { new SchoologyEntity(id, schoolName, string.Empty, null, _session.User.Clone()) };
     }
 
-    private UIElement BuildThreePane(string kind)
+    private UIElement BuildThreePane(string kind, SchoologyEntity? initialEntity = null)
     {
         var split = new SplitView
         {
@@ -1138,8 +1358,9 @@ public sealed partial class MainWindow : Window
             kind == "Groups" ? _groups : GetSchoolProfileEntities();
         var master = new StackPanel { Spacing = 8, Margin = new Thickness(16) };
         master.Children.Add(Text(kind == "School Profile" ? "School" : $"My {kind}", 20, true));
-        master.Children.Add(new TextBox { PlaceholderText = $"Search {kind.ToLowerInvariant()}", Margin = new Thickness(0, 4, 0, 8) });
-        var selectedName = Text("Select an item", 14, true);
+        var entitySearch = new TextBox { PlaceholderText = $"Search {kind.ToLowerInvariant()}", Margin = new Thickness(0, 4, 0, 8) };
+        master.Children.Add(entitySearch);
+        var selectedName = Text(initialEntity?.Name ?? "Select an item", 14, true);
         var selector = new SelectorBar { Margin = new Thickness(0, 0, 0, 12) };
         var tabs = kind == "School Profile" ? new[] { "Updates", "Info", "Upcoming", "Resources", "Discussions" } :
             kind == "Groups" ? new[] { "Updates", "Members", "Upcoming", "Discussions", "Resources" } :
@@ -1168,12 +1389,29 @@ public sealed partial class MainWindow : Window
         {
             SelectionMode = ListViewSelectionMode.Single,
             IsItemClickEnabled = true,
-            ItemsSource = entries,
+            ItemsSource = new ObservableCollection<SchoologyEntity>(entries),
             DisplayMemberPath = nameof(SchoologyEntity.Name),
             HorizontalContentAlignment = HorizontalAlignment.Stretch
         };
         AutomationProperties.SetAutomationId(entityList, kind + "EntityList");
         _entityListView = entityList;
+        var filteredEntities = (ObservableCollection<SchoologyEntity>)entityList.ItemsSource;
+        entitySearch.TextChanged += (_, _) =>
+        {
+            var query = entitySearch.Text.Trim();
+            filteredEntities.Clear();
+            foreach (var candidate in entries.Where(candidate => query.Length == 0 ||
+                candidate.Name.Contains(query, StringComparison.CurrentCultureIgnoreCase) ||
+                candidate.Subtitle.Contains(query, StringComparison.CurrentCultureIgnoreCase)))
+                filteredEntities.Add(candidate);
+        };
+        if (initialEntity is not null)
+        {
+            entityList.SelectedItem = initialEntity;
+            selector.SelectedItem = selector.Items.FirstOrDefault();
+            if (selector.SelectedItem is SelectorBarItem initialTab)
+                NavigateShellFrame(detail, BuildEntityTabContent(kind, initialEntity.Id, initialEntity.Name, initialTab.Text), SlideNavigationTransitionEffect.FromRight);
+        }
         entityList.ItemClick += (_, args) =>
         {
             if (args.ClickedItem is not SchoologyEntity entity) return;
@@ -1248,31 +1486,228 @@ public sealed partial class MainWindow : Window
                 if (body.Children.Count <= 2) body.Children.Add(Surface(Text("No additional school information was returned.")));
                 return;
             }
-            var records = SchoologyApiClient.ReadRecords(document.RootElement);
+            var records = SchoologyApiClient.ReadRecords(document.RootElement,
+                tab == "Members" ? ["enrollment", "enrollments", "member", "members", "user", "users"] :
+                tab == "Materials" ? ["folder-item", "folder_item", "folderItems", "items"] : []);
             body.Children.Remove(status);
+            if (tab == "Members") { body.Children.Add(BuildMembersList(records, kind)); return; }
+            if (tab == "Materials") { body.Children.Add(BuildMaterialsList(entityId, records)); return; }
             if (records.Count == 0)
             {
                 body.Children.Add(Surface(Text($"No {tab.ToLowerInvariant()} were returned by Schoology.")));
                 return;
             }
+            if (tab == "Updates")
+            {
+                foreach (var record in records) body.Children.Add(BuildUpdateCard(kind, entityId, record));
+                return;
+            }
+            var list = new ListView { SelectionMode = ListViewSelectionMode.None, HorizontalContentAlignment = HorizontalAlignment.Stretch };
+            AutomationProperties.SetAutomationId(list, $"{kind}{tab}List");
             foreach (var record in records)
             {
-                if (tab == "Updates")
-                {
-                    body.Children.Add(BuildUpdateCard(kind, entityId, record));
-                    continue;
-                }
-                var item = new StackPanel { Spacing = 4 };
-                item.Children.Add(Text(record.Title, 15, true));
-                if (!string.IsNullOrWhiteSpace(record.Subtitle))
-                    item.Children.Add(Text(record.Subtitle, 12));
-                body.Children.Add(Surface(item));
+                var row = new Grid { ColumnSpacing = 12, Padding = new Thickness(8, 9, 8, 9) };
+                row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+                row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+                row.Children.Add(new FontIcon { Glyph = tab == "Materials" ? MaterialGlyph(record.Data) : "\uE8A5",
+                    FontSize = 22, Foreground = ThemeBrush("SchoologyBlueBrush"), Width = 32 });
+                var labels = new StackPanel { Spacing = 3 };
+                labels.Children.Add(Text(record.Title, 14, true));
+                if (!string.IsNullOrWhiteSpace(record.Subtitle)) labels.Children.Add(Text(record.Subtitle, 12));
+                Grid.SetColumn(labels, 1); row.Children.Add(labels);
+                list.Items.Add(new ListViewItem { Content = row });
             }
+            body.Children.Add(list);
         }
         catch (Exception ex)
         {
             status.Text = $"Unable to load {tab.ToLowerInvariant()}: {ex.Message}";
         }
+    }
+
+
+
+    private UIElement BuildMaterialsList(long sectionId, IReadOnlyList<SchoologyApiRecord> initialRecords)
+    {
+        var panel = new StackPanel { Spacing = 8 };
+        var breadcrumb = Text("Materials", 13, true);
+        var history = new Stack<(SchoologyApiRecord[] Records, string Title)>();
+        Button back = null!;
+        back = Action("‹ Back to course materials", (_, _) =>
+        {
+            if (history.Count == 0) return;
+            var previous = history.Pop();
+            Render(previous.Records);
+            breadcrumb.Text = previous.Title;
+            back.IsEnabled = history.Count > 0;
+        });
+        back.IsEnabled = false;
+        IReadOnlyList<SchoologyApiRecord> current = initialRecords;
+        var list = new ListView { SelectionMode = ListViewSelectionMode.Single, IsItemClickEnabled = true,
+            HorizontalContentAlignment = HorizontalAlignment.Stretch };
+        AutomationProperties.SetAutomationId(list, "CourseMaterialsList");
+        void Render(IReadOnlyList<SchoologyApiRecord> records)
+        {
+            current = records;
+            list.Items.Clear();
+            foreach (var record in records)
+            {
+                var type = ProfileValue(record.Data, "type", "document_type", "documentType") ?? "";
+                var title = ProfileValue(record.Data, "title", "name") ?? record.Title;
+                var row = new Grid { ColumnSpacing = 12, Padding = new Thickness(8, 9, 8, 9) };
+                row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(36) });
+                row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+                row.Children.Add(new FontIcon { Glyph = MaterialGlyph(record.Data), FontSize = 23,
+                    Foreground = ThemeBrush("SchoologyBlueBrush"), VerticalAlignment = VerticalAlignment.Center });
+                var labels = new StackPanel { Spacing = 3, VerticalAlignment = VerticalAlignment.Center };
+                labels.Children.Add(Text(title, 14, true));
+                var subtitle = ProfileValue(record.Data, "description", "body", "due", "due_date");
+                if (!string.IsNullOrWhiteSpace(subtitle)) labels.Children.Add(Text(subtitle, 12));
+                Grid.SetColumn(labels, 1); row.Children.Add(labels);
+                list.Items.Add(new ListViewItem { Content = row, Tag = record });
+            }
+        }
+        list.ItemClick += async (_, args) =>
+        {
+            if (args.ClickedItem is not ListViewItem { Tag: SchoologyApiRecord record }) return;
+            if (!string.Equals(ProfileValue(record.Data, "type"), "folder", StringComparison.OrdinalIgnoreCase)) return;
+            var folderId = JsonLong(record.Data, "id", "folder_id", "folderId");
+            if (folderId <= 0 || _session is null) return;
+            try
+            {
+                using var folder = await _api.GetCourseFolderAsync(_session, sectionId, folderId);
+                var records = SchoologyApiClient.ReadRecords(folder.RootElement, "folder-item", "folder_item", "folderItems", "items");
+                history.Push((current.ToArray(), breadcrumb.Text));
+                breadcrumb.Text = ProfileValue(record.Data, "title", "name") ?? record.Title;
+                back.IsEnabled = true;
+                Render(records);
+                if (records.Count == 0) list.Items.Add(new ListViewItem { Content = Text("This folder is empty.", 13) });
+            }
+            catch (Exception ex) { await ShowApiErrorAsync("Unable to open folder", ex.Message); }
+        };
+        panel.Children.Add(back);
+        panel.Children.Add(breadcrumb);
+        panel.Children.Add(list);
+        Render(initialRecords);
+        if (initialRecords.Count == 0) list.Items.Add(new ListViewItem { Content = Text("This course has no materials.", 13) });
+        return panel;
+    }
+
+    private UIElement BuildMembersList(IReadOnlyList<SchoologyApiRecord> records, string kind)
+    {
+        var people = records.Select(record =>
+        {
+            var data = record.Data;
+            var user = data.ValueKind == System.Text.Json.JsonValueKind.Object && data.TryGetProperty("user", out var nested) ? nested : data;
+            var id = JsonLong(data, "uid", "user_id", "userId", "id");
+            if (id <= 0) id = JsonLong(user, "id", "uid", "user_id");
+            var first = ProfileValue(user, "name_first", "first_name") ?? ProfileValue(data, "name_first", "first_name") ?? "";
+            var last = ProfileValue(user, "name_last", "last_name") ?? ProfileValue(data, "name_last", "last_name") ?? "";
+            var name = ProfileValue(user, "name_display", "display_name", "name") ?? ProfileValue(data, "name_display", "display_name", "name")
+                ?? string.Join(" ", new[] { first, last }.Where(value => !string.IsNullOrWhiteSpace(value)));
+            var picture = ProfileValue(user, "picture_url", "pictureUrl", "picture") ?? ProfileValue(data, "picture_url", "pictureUrl", "picture");
+            var role = ProfileValue(data, "role_name", "roleName", "role", "position") ?? ProfileValue(user, "role_name", "roleName", "role");
+            var admin = JsonBoolean(data, "admin", "is_admin", "isAdmin", "owner", "is_owner") ||
+                JsonBoolean(user, "admin", "is_admin", "isAdmin", "owner", "is_owner") ||
+                (!string.IsNullOrWhiteSpace(role) && System.Text.RegularExpressions.Regex.IsMatch(role, @"\b(admin|administrator|owner)\b", System.Text.RegularExpressions.RegexOptions.IgnoreCase));
+            return new { Id = id, First = first, Last = last, Name = string.IsNullOrWhiteSpace(name) ? "Schoology member" : name, Picture = picture, Role = role, Admin = admin };
+        }).Where(person => person.Id > 0).ToList();
+        var root = new StackPanel { Spacing = 8 };
+        var filters = new SelectorBar { HorizontalAlignment = HorizontalAlignment.Left };
+        var all = new SelectorBarItem { Text = "All" };
+        var members = new SelectorBarItem { Text = "Members" };
+        var admins = new SelectorBarItem { Text = "Admins" };
+        filters.Items.Add(all); filters.Items.Add(members); filters.Items.Add(admins); filters.SelectedItem = all;
+        var search = new TextBox { PlaceholderText = $"Search {kind.ToLowerInvariant()} members" };
+        var list = new ListView { SelectionMode = ListViewSelectionMode.None, HorizontalContentAlignment = HorizontalAlignment.Stretch };
+        AutomationProperties.SetAutomationId(list, kind + "MembersList");
+        void Render()
+        {
+            list.Items.Clear();
+            var query = search.Text.Trim();
+            var visible = people.Where(person =>
+                (filters.SelectedItem == all || (filters.SelectedItem == admins ? person.Admin : !person.Admin)) &&
+                (query.Length == 0 || person.Name.Contains(query, StringComparison.CurrentCultureIgnoreCase) ||
+                 person.Last.Contains(query, StringComparison.CurrentCultureIgnoreCase)))
+                .OrderByDescending(person => person.Admin).ThenBy(person => person.Last, StringComparer.CurrentCultureIgnoreCase)
+                .ThenBy(person => person.First, StringComparer.CurrentCultureIgnoreCase).ToList();
+            if (visible.Count == 0)
+            {
+                list.Items.Add(new ListViewItem { Content = Text(filters.SelectedItem == admins ? "No admins found." :
+                    filters.SelectedItem == members ? "No members found." : "No members were returned by Schoology.", 13) });
+                return;
+            }
+            var lastHeader = "";
+            foreach (var person in visible)
+            {
+                var header = filters.SelectedItem == all && person.Admin ? "Admins" :
+                    (string.IsNullOrWhiteSpace(person.Last) ? "#" : person.Last[..1].ToUpperInvariant());
+                if (header != lastHeader)
+                {
+                    list.Items.Add(new ListViewItem { IsEnabled = false, Content = Text(header, 12, true),
+                        Background = ThemeBrush("SchoologySubtleBrush"), Padding = new Thickness(10, 6, 10, 6) });
+                    lastHeader = header;
+                }
+                var row = new Grid { ColumnSpacing = 12, Padding = new Thickness(8, 7, 8, 7) };
+                row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(44) });
+                row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+                var avatar = new Image { Width = 40, Height = 40, Stretch = Microsoft.UI.Xaml.Media.Stretch.UniformToFill };
+                if (!string.IsNullOrWhiteSpace(person.Picture))
+                    try { avatar.Source = new BitmapImage(new Uri(NormalizeSchoologyImageUrl(person.Picture))); } catch { }
+                else _ = LoadMemberAvatarAsync(person.Id, avatar);
+                row.Children.Add(new Border { Width = 40, Height = 40, CornerRadius = new CornerRadius(20),
+                    Background = ThemeBrush("SchoologySubtleBrush"), Child = avatar });
+                var labels = new StackPanel { Spacing = 2, VerticalAlignment = VerticalAlignment.Center };
+                labels.Children.Add(Text(person.Name, 14, true));
+                if (!string.IsNullOrWhiteSpace(person.Role)) labels.Children.Add(Text(person.Role, 11));
+                Grid.SetColumn(labels, 1); row.Children.Add(labels);
+                list.Items.Add(new ListViewItem { Content = row, Tag = person.Id });
+            }
+        }
+        filters.SelectionChanged += (_, _) => Render();
+        search.TextChanged += (_, _) => Render();
+        Render();
+        root.Children.Add(filters); root.Children.Add(search); root.Children.Add(list);
+        if (people.Count == 0) root.Children.Add(Text("The enrollment response contained no recognizable user IDs.", 12));
+        return root;
+    }
+
+
+
+    private static string NormalizeSchoologyImageUrl(string value)
+    {
+        var url = value.Trim();
+        if (url.StartsWith("//")) return "https:" + url;
+        if (url.StartsWith("/")) return "https://app.schoology.com" + url;
+        if (url.StartsWith("http://", StringComparison.OrdinalIgnoreCase)) return "https://" + url[7..];
+        return url;
+    }
+
+    private async Task LoadMemberAvatarAsync(long userId, Image image)
+    {
+        try
+        {
+            if (_session is null || userId <= 0) return;
+            using var user = await _api.GetUserAsync(_session, userId);
+            var data = user.RootElement.TryGetProperty("user", out var nested) ? nested : user.RootElement;
+            var picture = ProfileValue(data, "picture_url", "pictureUrl", "picture", "photo_url");
+            if (!string.IsNullOrWhiteSpace(picture))
+                image.Source = new BitmapImage(new Uri(NormalizeSchoologyImageUrl(picture)));
+        }
+        catch { }
+    }
+
+    private static string MaterialGlyph(System.Text.Json.JsonElement data)
+    {
+        var type = ProfileValue(data, "type", "document_type", "mime_type", "mimeType", "extension")?.ToLowerInvariant() ?? "";
+        if (type.Contains("folder")) return "\uE8B7";
+        if (type.Contains("pdf")) return "\uEA90";
+        if (type.Contains("image") || type is "png" or "jpg" or "jpeg") return "\uEB9F";
+        if (type.Contains("video")) return "\uE714";
+        if (type.Contains("audio")) return "\uE8D6";
+        if (type.Contains("link") || type.Contains("url")) return "\uE71B";
+        if (type.Contains("spreadsheet") || type.Contains("xls")) return "\uE9F9";
+        return "\uE8A5";
     }
 
     private UIElement BuildUpdateCard(string kind, long entityId, SchoologyApiRecord update)
@@ -1432,43 +1867,76 @@ public sealed partial class MainWindow : Window
 
     private UIElement BuildMessagesPage()
     {
-        var panel = new StackPanel { Spacing = 12, Margin = new Thickness(24) };
+        var panel = new Grid { Margin = new Thickness(20), RowSpacing = 12 };
+        panel.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        panel.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        panel.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        panel.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         panel.Children.Add(Text("Messages", 24, true));
-        var folders = new SelectorBar();
+        var folders = new SelectorBar { HorizontalAlignment = HorizontalAlignment.Left };
         folders.Items.Add(new SelectorBarItem { Text = "Inbox" });
         folders.Items.Add(new SelectorBarItem { Text = "Sent" });
         folders.SelectedItem = folders.Items[0];
-        panel.Children.Add(folders);
+        Grid.SetRow(folders, 1); panel.Children.Add(folders);
         var status = Text("Loading messages…", 13);
-        panel.Children.Add(status);
-        var list = new ListView { SelectionMode = ListViewSelectionMode.Single, IsItemClickEnabled = true };
+        Grid.SetRow(status, 2); panel.Children.Add(status);
+        var list = new ListView { SelectionMode = ListViewSelectionMode.Single, IsItemClickEnabled = true,
+            HorizontalContentAlignment = HorizontalAlignment.Stretch };
         AutomationProperties.SetAutomationId(list, "SchoologyMessagesList");
-        panel.Children.Add(list);
+        Grid.SetRow(list, 3); panel.Children.Add(list);
         async Task LoadFolderAsync(bool sent)
         {
             try
             {
                 if (_session is null) throw new InvalidOperationException("Sign in to view messages.");
                 status.Text = sent ? "Loading sent messages…" : "Loading inbox…";
+                list.Items.Clear();
                 using var document = await _api.GetMessagesAsync(_session, sent);
-                var rows = SchoologyApiClient.ReadRecords(document.RootElement);
-                list.ItemsSource = rows;
-                list.DisplayMemberPath = nameof(SchoologyApiRecord.Title);
-                status.Text = rows.Count == 0 ? (sent ? "No sent messages." : "Your inbox is empty.") : $"{rows.Count} messages";
+                var records = SchoologyApiClient.ReadRecords(document.RootElement, "message", "messages");
+                foreach (var record in records)
+                {
+                    var idText = ProfileValue(record.Data, sent ? "recipient_ids" : "author_id",
+                        sent ? "recipientIds" : "authorId") ?? "";
+                    if (idText.Contains(',')) idText = idText.Split(',')[0];
+                    long.TryParse(idText, out var userId);
+                    string name = sent ? "Recipient" : "Schoology";
+                    string? picture = null;
+                    if (userId > 0)
+                    {
+                        try
+                        {
+                            using var userDoc = await _api.GetUserAsync(_session, userId);
+                            var user = userDoc.RootElement.TryGetProperty("user", out var nested) ? nested : userDoc.RootElement;
+                            name = ProfileValue(user, "name_display", "display_name", "name") ?? name;
+                            picture = ProfileValue(user, "picture_url", "pictureUrl", "picture", "photo_url");
+                        }
+                        catch { }
+                    }
+                    var row = new Grid { ColumnSpacing = 12, Padding = new Thickness(8, 9, 8, 9) };
+                    row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(48) });
+                    row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+                    var avatar = new Image { Width = 44, Height = 44, Stretch = Microsoft.UI.Xaml.Media.Stretch.UniformToFill };
+                    if (!string.IsNullOrWhiteSpace(picture))
+                        try { avatar.Source = new BitmapImage(new Uri(NormalizeSchoologyImageUrl(picture))); } catch { }
+                    row.Children.Add(new Border { Width = 44, Height = 44, CornerRadius = new CornerRadius(22),
+                        Background = ThemeBrush("SchoologySubtleBrush"), Child = avatar });
+                    var labels = new StackPanel { Spacing = 3, VerticalAlignment = VerticalAlignment.Center };
+                    labels.Children.Add(Text(name, 14, true));
+                    labels.Children.Add(Text(record.Title, 13));
+                    if (!string.IsNullOrWhiteSpace(record.Subtitle)) labels.Children.Add(Text(record.Subtitle, 11));
+                    Grid.SetColumn(labels, 1); row.Children.Add(labels);
+                    list.Items.Add(new ListViewItem { Content = row, Tag = record });
+                }
+                status.Text = records.Count == 0 ? (sent ? "No sent messages." : "Your inbox is empty.") : $"{records.Count} messages";
             }
             catch (Exception ex) { status.Text = $"Unable to load messages: {ex.Message}"; }
         }
         folders.SelectionChanged += (_, _) => _ = LoadFolderAsync(folders.SelectedItem == folders.Items[1]);
         list.ItemClick += async (_, args) =>
         {
-            if (args.ClickedItem is not SchoologyApiRecord message) return;
-            var dialog = new ContentDialog
-            {
-                Title = message.Title,
-                Content = message.Subtitle,
-                CloseButtonText = "Close",
-                XamlRoot = _root.XamlRoot
-            };
+            if (args.ClickedItem is not ListViewItem { Tag: SchoologyApiRecord message }) return;
+            var dialog = new ContentDialog { Title = message.Title, Content = message.Subtitle,
+                CloseButtonText = "Close", XamlRoot = _root.XamlRoot };
             await dialog.ShowAsync();
         };
         _ = LoadFolderAsync(false);

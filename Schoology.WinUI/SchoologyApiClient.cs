@@ -25,6 +25,14 @@ internal sealed class SchoologyApiClient
         SchoologyAuthService.Session session, CancellationToken cancellationToken = default) =>
         _auth.GetApiJsonAsync(session, "users/me", null, cancellationToken);
 
+    internal Task<JsonDocument> GetUserAsync(
+        SchoologyAuthService.Session session, long userId, CancellationToken cancellationToken = default) =>
+        _auth.GetApiJsonAsync(session, $"users/{userId}", null, cancellationToken);
+
+    internal Task<JsonDocument> GetCourseFolderAsync(
+        SchoologyAuthService.Session session, long sectionId, long folderId, CancellationToken cancellationToken = default) =>
+        _auth.GetApiJsonAsync(session, $"courses/{sectionId}/folder/{folderId}", null, cancellationToken);
+
     internal Task<JsonDocument> GetMessagesAsync(
         SchoologyAuthService.Session session, bool sent, CancellationToken cancellationToken = default) =>
         _auth.GetApiJsonAsync(session, sent ? "messages/sent" : "messages/inbox",
@@ -40,9 +48,9 @@ internal sealed class SchoologyApiClient
         var resource = tab switch
         {
             "Updates" => "updates",
-            "Materials" => "documents",
+            "Materials" => "materials_hierarchy",
             "Grades" => "grades",
-            "Members" => "enrollments",
+            "Members" => kind == "Groups" ? "members" : "enrollments",
             "Staff" => "users",
             "Discussions" => "discussions",
             "Events" or "Upcoming" => "events",
@@ -50,8 +58,14 @@ internal sealed class SchoologyApiClient
             "Info" => throw new InvalidOperationException("School information is not available."),
             _ => throw new InvalidOperationException($"The {tab} view is not supported.")
         };
-        return await _auth.GetApiJsonAsync(session, $"{realm}/{entityId}/{resource}",
-            new Dictionary<string, string> { ["limit"] = "100" }, cancellationToken);
+        var parameters = tab == "Members"
+            ? kind == "Groups"
+                ? new Dictionary<string, string> { ["start"] = "0", ["limit"] = "200" }
+                : new Dictionary<string, string> { ["start"] = "0", ["limit"] = "200", ["enrollment_status"] = "1" }
+            : tab == "Materials"
+                ? new Dictionary<string, string> { ["start"] = "0", ["limit"] = "200", ["with_attachments"] = "TRUE" }
+                : new Dictionary<string, string> { ["limit"] = "100" };
+        return await _auth.GetApiJsonAsync(session, $"{realm}/{entityId}/{resource}", parameters, cancellationToken);
     }
 
     internal Task<JsonDocument> GetUpdateCommentsAsync(
@@ -93,7 +107,8 @@ internal sealed class SchoologyApiClient
                 ReadLong(item.Data, "id", "section_id", "group_id"),
                 item.Title,
                 item.Subtitle,
-                ReadString(item.Data, "picture_url", "pictureUrl", "picture", "image", "profile_url", "profileUrl"),
+                ReadString(item.Data, "picture_url", "pictureUrl", "picture", "image", "profile_url", "profileUrl",
+                    "course_profile_url", "courseProfileUrl", "course_theme", "courseTheme", "course_image", "courseImage"),
                 item.Data.Clone()))
             .Where(item => item.Id > 0)
             .ToArray();
@@ -109,15 +124,28 @@ internal sealed class SchoologyApiClient
             var keys = collectionKeys.Length == 0
                 ? new[] { "section", "sections", "group", "groups", "update", "updates", "document", "documents",
                     "grade", "grades", "member", "members", "discussion", "discussions", "event", "events",
-                    "resource", "resources", "message", "messages", "folder", "folders", "user", "users" }
+                    "resource", "resources", "message", "messages", "folder", "folders", "user", "users",
+                    "enrollment", "enrollments", "event", "events", "update", "updates" }
                 : collectionKeys;
             foreach (var key in keys)
             {
-                if (root.TryGetProperty(key, out collection) && collection.ValueKind == JsonValueKind.Array)
+                if (root.TryGetProperty(key, out collection))
                 {
-                    found = true;
-                    break;
+                    if (collection.ValueKind == JsonValueKind.Array) { found = true; break; }
+                    if (collection.ValueKind == JsonValueKind.Object)
+                    {
+                        foreach (var nestedKey in keys)
+                            if (collection.TryGetProperty(nestedKey, out var nested) && nested.ValueKind == JsonValueKind.Array)
+                            { collection = nested; found = true; break; }
+                        if (found) break;
+                    }
                 }
+            }
+            if (!found && root.TryGetProperty("data", out var data) && data.ValueKind == JsonValueKind.Object)
+            {
+                foreach (var key in keys)
+                    if (data.TryGetProperty(key, out var nested) && nested.ValueKind == JsonValueKind.Array)
+                    { collection = nested; found = true; break; }
             }
             if (!found) return [];
         }
@@ -131,12 +159,11 @@ internal sealed class SchoologyApiClient
                 ReadString(element, "name_first", "first_name"),
                 ReadString(element, "name_last", "last_name")
             }.Where(value => !string.IsNullOrWhiteSpace(value))).Trim();
-            var title = ReadString(element, "title", "name_display", "nameDisplay", "name",
-                "user_name", "author_name", "created_by", "course_title", "courseTitle",
-                "section_title", "sectionTitle", "subject", "message_subject")
+            var title = ReadString(element, "course_title", "courseTitle", "title", "name_display", "nameDisplay", "name",
+                "user_name", "author_name", "created_by", "section_title", "sectionTitle", "subject", "message_subject")
                 ?? (string.IsNullOrWhiteSpace(personName) ? "Schoology item" : personName);
-            var subtitle = ReadString(element, "description", "body", "comment", "text", "message", "role", "admin",
-                "due", "due_date", "section_title", "sectionTitle", "created", "timestamp") ?? string.Empty;
+            var subtitle = ReadString(element, "section_title", "sectionTitle", "description", "body", "comment", "text", "message", "role", "admin",
+                "due", "due_date", "created", "timestamp") ?? string.Empty;
             records.Add(new SchoologyApiRecord(title, subtitle, element.Clone()));
         }
         return records;
