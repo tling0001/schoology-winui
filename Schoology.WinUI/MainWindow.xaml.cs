@@ -5,6 +5,7 @@ using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Navigation;
+using Microsoft.UI.Xaml.Media.Animation;
 using System.Web;
 using Windows.Media.Playback;
 using System.Runtime.InteropServices;
@@ -117,6 +118,8 @@ public sealed partial class MainWindow : Window
             "SchoologySurfaceBrush" => Brush("#FFFFFFFF"),
             "SchoologySubtleBrush" => Brush("#FFF2F5F7"),
             "SchoologyDividerBrush" => Brush("#FFD9E0E5"),
+            "SchoologyTextBrush" => Brush("#FF202124"),
+            "SchoologyMutedTextBrush" => Brush("#FF52616D"),
             "SchoologyBlueDarkBrush" => Brush("#FF204D7B"),
             _ => Brush("#FF2E66A3")
         };
@@ -141,7 +144,22 @@ public sealed partial class MainWindow : Window
         };
         return new Border { Background = material, BorderBrush = ThemeBrush("SchoologyDividerBrush"), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(8), Padding = padding ?? new Thickness(16), Child = child, Margin = new Thickness(0, 0, 0, 12) };
     }
-    private void Reset(UIElement content) { _root.Children.Clear(); _root.Children.Add(content); }
+    private void Reset(UIElement content)
+    {
+        _root.Children.Clear();
+        if (new UISettings().AnimationsEnabled)
+        {
+            content.Transitions = new TransitionCollection
+            {
+                new EntranceThemeTransition { FromHorizontalOffset = 24 }
+            };
+        }
+        else
+        {
+            content.Transitions = null;
+        }
+        _root.Children.Add(content);
+    }
 
     private void ShowSplash()
     {
@@ -162,7 +180,8 @@ public sealed partial class MainWindow : Window
         var scroll = new ScrollViewer
         {
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            Background = new SolidColorBrush(Colors.Transparent)
         };
         var stack = new StackPanel
         {
@@ -193,27 +212,45 @@ public sealed partial class MainWindow : Window
             Padding = new Thickness(12, 8, 12, 8),
             Background = new SolidColorBrush(Colors.Transparent),
             BorderThickness = new Thickness(0),
-            Foreground = Brush(dark ? "#FFD0D5DA" : "#FFF2F5F7")
+            Foreground = ThemeBrush("SchoologyTextBrush")
         };
         help.Click += (_, _) => ShowSignInHelpPage();
         stack.Children.Add(help);
+        // The window remains transparent so Mica is visible. Acrylic is only
+        // used on this compact, vertically centered card.
         scroll.Content = stack;
-        var backdrop = new AcrylicBrush
+        scroll.MaxHeight = 720;
+        var card = new Border
         {
-            TintColor = dark
-                ? Microsoft.UI.ColorHelper.FromArgb(255, 24, 30, 36)
-                : Microsoft.UI.ColorHelper.FromArgb(255, 42, 70, 91),
-            TintOpacity = dark ? 0.70 : 0.66,
-            FallbackColor = dark
-                ? Microsoft.UI.ColorHelper.FromArgb(255, 24, 30, 36)
-                : Microsoft.UI.ColorHelper.FromArgb(255, 42, 70, 91)
+            Width = 520,
+            MaxWidth = 520,
+            MaxHeight = 760,
+            Background = new AcrylicBrush
+            {
+                TintColor = dark
+                    ? Microsoft.UI.ColorHelper.FromArgb(255, 32, 36, 40)
+                    : Microsoft.UI.ColorHelper.FromArgb(255, 248, 250, 252),
+                TintOpacity = 0.22,
+                FallbackColor = dark
+                    ? Microsoft.UI.ColorHelper.FromArgb(255, 32, 36, 40)
+                    : Microsoft.UI.ColorHelper.FromArgb(255, 248, 250, 252)
+            },
+            BorderBrush = ThemeBrush("SchoologyDividerBrush"),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(12),
+            Padding = new Thickness(8),
+            Child = scroll,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center
         };
         var page = new Grid { Background = new SolidColorBrush(Colors.Transparent) };
-        page.Children.Add(new Border { Background = backdrop, Child = scroll });
+        page.Children.Add(card);
         page.SizeChanged += (_, args) =>
         {
-            stack.Width = Math.Min(460, Math.Max(180, args.NewSize.Width - 56));
-            logo.Width = Math.Min(args.NewSize.Width < 520 ? 230 : 265, Math.Max(140, args.NewSize.Width - 96));
+            card.Width = Math.Min(520, Math.Max(220, args.NewSize.Width - 48));
+            scroll.MaxHeight = Math.Max(240, args.NewSize.Height - 48);
+            stack.Width = Math.Min(460, Math.Max(180, args.NewSize.Width - 104));
+            logo.Width = Math.Min(args.NewSize.Width < 520 ? 230 : 265, Math.Max(140, args.NewSize.Width - 144));
             stack.Margin = args.NewSize.Height < 560 ? new Thickness(20, 8, 20, 8) : new Thickness(28);
         };
         Reset(page);
@@ -242,6 +279,7 @@ public sealed partial class MainWindow : Window
             HorizontalAlignment = HorizontalAlignment.Center,
             TextAlignment = TextAlignment.Center
         };
+        AutomationProperties.SetName(image, label + " icon");
         row.Children.Add(image);
         Grid.SetColumn(text, 1);
         row.Children.Add(text);
@@ -264,7 +302,7 @@ public sealed partial class MainWindow : Window
     {
         _page = title;
         var dark = _root.ActualTheme == ElementTheme.Dark;
-        var grid = new Grid();
+        var grid = new Grid { Background = new SolidColorBrush(Colors.Transparent) };
         grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         var header = new Grid { Margin = new Thickness(20, 14, 20, 14), ColumnSpacing = 14 };
@@ -288,30 +326,40 @@ public sealed partial class MainWindow : Window
             MaxWidth = 620,
             HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Top,
-            Margin = new Thickness(28)
+            Margin = new Thickness(0)
         };
-        scroll.Content = content;
-        var surface = new Border
+        // Only the form card uses Acrylic; the surrounding page shows Mica.
+        scroll.Content = new Border
         {
             Background = new AcrylicBrush
             {
-                TintColor = dark ? Microsoft.UI.ColorHelper.FromArgb(255, 27, 32, 38) : Microsoft.UI.ColorHelper.FromArgb(255, 248, 250, 252),
-                TintOpacity = dark ? 0.76 : 0.72,
-                FallbackColor = dark ? Microsoft.UI.ColorHelper.FromArgb(255, 27, 32, 38) : Microsoft.UI.ColorHelper.FromArgb(255, 255, 255, 255)
+                TintColor = dark
+                    ? Microsoft.UI.ColorHelper.FromArgb(255, 32, 36, 40)
+                    : Microsoft.UI.ColorHelper.FromArgb(255, 248, 250, 252),
+                TintOpacity = 0.24,
+                FallbackColor = dark
+                    ? Microsoft.UI.ColorHelper.FromArgb(255, 32, 36, 40)
+                    : Microsoft.UI.ColorHelper.FromArgb(255, 248, 250, 252)
             },
-            Child = scroll
+            BorderBrush = ThemeBrush("SchoologyDividerBrush"),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(12),
+            Padding = new Thickness(24),
+            Child = content,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Top
         };
-        Grid.SetRow(surface, 1);
-        grid.Children.Add(surface);
+        Grid.SetRow(scroll, 1);
+        grid.Children.Add(scroll);
         // Copy the out parameter to a local before capturing it in the event handler.
         // C# does not allow ref/out parameters to be captured by lambdas.
         var responsiveContent = content;
-        grid.SizeChanged += (_, args) => responsiveContent.Width = Math.Min(620, Math.Max(180, args.NewSize.Width - 96));
+        grid.SizeChanged += (_, args) => responsiveContent.Width = Math.Min(620, Math.Max(180, args.NewSize.Width - 144));
         Reset(grid);
         return grid;
     }
 
-    private static async Task SetEmbeddedImageAsync(Image image, string resourceName)
+    private async Task SetEmbeddedImageAsync(Image image, string resourceName)
     {
         var assembly = typeof(MainWindow).Assembly;
         var resolvedName = assembly.GetManifestResourceNames()
@@ -333,20 +381,43 @@ public sealed partial class MainWindow : Window
 
         using var buffer = new MemoryStream();
         await source.CopyToAsync(buffer);
+        var imageBytes = buffer.ToArray();
+
+        if (resourceName.EndsWith(".svg", StringComparison.OrdinalIgnoreCase))
+        {
+            // The supplied Schoology school/QR glyphs are white artwork intended
+            // for the old blue login background. Recolor their white paths for
+            // contrast on native light-mode buttons; retain white in dark mode.
+            if (_root.ActualTheme != ElementTheme.Dark)
+            {
+                var markup = Encoding.UTF8.GetString(imageBytes)
+                    .Replace("#ffffff", "#204D7B", StringComparison.OrdinalIgnoreCase);
+                imageBytes = Encoding.UTF8.GetBytes(markup);
+            }
+        }
 
         using var randomAccessStream = new InMemoryRandomAccessStream();
         using (var output = randomAccessStream.GetOutputStreamAt(0))
         using (var writer = new DataWriter(output))
         {
-            writer.WriteBytes(buffer.ToArray());
+            writer.WriteBytes(imageBytes);
             await writer.StoreAsync();
             writer.DetachStream();
         }
 
         randomAccessStream.Seek(0);
-        var bitmap = new BitmapImage();
-        await bitmap.SetSourceAsync(randomAccessStream);
-        image.Source = bitmap;
+        if (resourceName.EndsWith(".svg", StringComparison.OrdinalIgnoreCase))
+        {
+            var vector = new SvgImageSource();
+            await vector.SetSourceAsync(randomAccessStream);
+            image.Source = vector;
+        }
+        else
+        {
+            var bitmap = new BitmapImage();
+            await bitmap.SetSourceAsync(randomAccessStream);
+            image.Source = bitmap;
+        }
     }
 
     private void ShowSchoolSignInPage()
