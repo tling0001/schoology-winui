@@ -25,6 +25,9 @@ public sealed partial class MainWindow : Window
     private string _page = "login";
     private string _lastRenderedPage = "splash";
     private string _section = "Recent Activity";
+    private NavigationView? _appNavigation;
+    private SplitView? _homeSplitView;
+    private string _selectedEntity = string.Empty;
     private readonly SchoologyAuthService _auth = new(false);
     private SchoologyAuthService.Session? _session;
     private QrCameraScanner? _qrScanner;
@@ -40,7 +43,9 @@ public sealed partial class MainWindow : Window
 
         _root = Root;
         Title = "Schoology";
-        ExtendsContentIntoTitleBar = false;
+        ExtendsContentIntoTitleBar = true;
+        AppWindow.TitleBar.ButtonBackgroundColor = Colors.Transparent;
+        AppWindow.TitleBar.ButtonInactiveBackgroundColor = Colors.Transparent;
         try { SystemBackdrop = new MicaBackdrop(); } catch { }
 
         App.WriteStartupLog("Setting initial window size.");
@@ -810,146 +815,296 @@ public sealed partial class MainWindow : Window
         await dialog.ShowAsync();
     }
 
+    private UIElement BuildApplicationShell(string section, UIElement content)
+    {
+        var shell = new Grid { Background = ThemeBrush("SchoologySubtleBrush") };
+        shell.RowDefinitions.Add(new RowDefinition { Height = new GridLength(48) });
+        shell.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+
+        var titleBar = new Grid { Background = new SolidColorBrush(Colors.Transparent), Padding = new Thickness(16, 0, 12, 0) };
+        titleBar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        titleBar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        titleBar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        var brand = Text("schoology", 17, true);
+        brand.Foreground = ThemeBrush("SchoologyBlueBrush");
+        titleBar.Children.Add(brand);
+        var caption = Text(section == "Recent Activity" ? "Home" : section, 13, true);
+        caption.Foreground = ThemeBrush("SchoologyMutedTextBrush");
+        caption.HorizontalAlignment = HorizontalAlignment.Center;
+        Grid.SetColumn(caption, 1);
+        titleBar.Children.Add(caption);
+        var commands = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, VerticalAlignment = VerticalAlignment.Center };
+        commands.Children.Add(Action("Search", (_, _) => ShowSearch()));
+        commands.Children.Add(Action("＋ Create", (_, _) => ShowCreateMenu(), true));
+        Grid.SetColumn(commands, 2);
+        titleBar.Children.Add(commands);
+        shell.Children.Add(titleBar);
+        SetTitleBar(titleBar);
+
+        var nav = new NavigationView
+        {
+            PaneDisplayMode = NavigationViewPaneDisplayMode.Left,
+            IsPaneOpen = true,
+            IsBackButtonVisible = NavigationViewBackButtonVisible.Collapsed,
+            IsSettingsVisible = false,
+            IsPaneToggleButtonVisible = true,
+            OpenPaneLength = 252,
+            CompactPaneLength = 64,
+            CompactModeThresholdWidth = 760,
+            ExpandedModeThresholdWidth = 1120,
+            Background = new SolidColorBrush(Colors.Transparent),
+            Content = content
+        };
+        var items = new (string Name, Symbol Icon)[]
+        {
+            ("Home", Symbol.Home), ("Upcoming", Symbol.Calendar), ("Courses", Symbol.Library),
+            ("Groups", Symbol.People), ("School Profile", Symbol.Home), ("Messages", Symbol.Mail),
+            ("Grades", Symbol.Page), ("Resources", Symbol.Folder)
+        };
+        foreach (var entry in items)
+        {
+            var item = new NavigationViewItem { Content = entry.Name, Tag = entry.Name, Icon = new SymbolIcon(entry.Icon) };
+            nav.MenuItems.Add(item);
+            if (entry.Name == (section == "Recent Activity" ? "Home" : section)) nav.SelectedItem = item;
+        }
+        nav.FooterMenuItems.Add(new NavigationViewItem
+        {
+            Content = _session is null ? "Profile and settings" : "Sign out",
+            Tag = "Sign out",
+            Icon = new SymbolIcon(Symbol.Contact)
+        });
+        nav.SelectionChanged += (_, args) =>
+        {
+            if (args.SelectedItem is not NavigationViewItem item || item.Tag is not string target) return;
+            if (target == "Sign out") { _auth.SignOut(); _session = null; ShowLogin(); }
+            else if (target == "Home") ShowHome();
+            else if (target == "Upcoming") ShowUpcoming();
+            else if (target is "Courses" or "Groups" or "School Profile") ShowThreePane(target);
+            else ShowHome(target);
+        };
+        _appNavigation = nav;
+        Grid.SetRow(nav, 1);
+        shell.Children.Add(nav);
+        return shell;
+    }
+
     private void ShowHome(string section = "Recent Activity")
     {
         _ = StopQrScannerAsync();
-        _page = "home"; _section = section;
-        var layout = new Grid { Background = ThemeBrush("SchoologySubtleBrush") };
-        layout.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(248) });
-        layout.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        var darkNav = _root.ActualTheme == ElementTheme.Dark;
-        var nav = new Grid { Background = new SolidColorBrush(Colors.Transparent) };
-        var navMaterial = new AcrylicBrush
-        {
-            TintColor = darkNav ? Microsoft.UI.ColorHelper.FromArgb(255, 18, 38, 56) : Microsoft.UI.ColorHelper.FromArgb(255, 32, 77, 123),
-            TintOpacity = darkNav ? 0.88 : 0.90,
-            FallbackColor = darkNav ? Microsoft.UI.ColorHelper.FromArgb(255, 24, 36, 46) : Microsoft.UI.ColorHelper.FromArgb(255, 32, 77, 123)
-        };
-        nav.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); nav.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) }); nav.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        var brand = new StackPanel { Margin = new Thickness(22, 24, 16, 22), Spacing = 3 };
-        brand.Children.Add(new TextBlock { Text = "schoology", FontSize = 27, FontWeight = Microsoft.UI.Text.FontWeights.Bold, Foreground = Brush("#FFFFFF") });
-        brand.Children.Add(new TextBlock { Text = "LEARNING MANAGEMENT", FontSize = 10, Foreground = Brush("#C9DFF2") });
-        Grid.SetRow(brand, 0); nav.Children.Add(brand);
-        var navItems = new StackPanel { Spacing = 5, Margin = new Thickness(12, 8, 12, 12) };
-        foreach (var item in new[] { "Home", "Upcoming", "Courses", "Groups", "School Profile", "Messages", "Grades", "Resources" })
-        {
-            var b = new Button { Content = item, HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Left, Padding = new Thickness(14, 11, 12, 11), Background = item == section || (section == "Recent Activity" && item == "Home") ? Brush("#3A6E9E") : new SolidColorBrush(Colors.Transparent), Foreground = Brush("#FFFFFF"), BorderThickness = new Thickness(0), CornerRadius = new CornerRadius(6) };
-            b.Click += (_, _) => { if (item == "Home") ShowHome("Recent Activity"); else if (item == "Upcoming") ShowUpcoming(); else if (item == "Courses" || item == "Groups" || item == "School Profile") ShowThreePane(item); else ShowHome(item); };
-            navItems.Children.Add(b);
-        }
-        var navScroll = new ScrollViewer { Content = navItems, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
-        Grid.SetRow(navScroll, 1); nav.Children.Add(navScroll);
-        var profile = new Button { Content = "◉   Profile and settings", HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Left, Padding = new Thickness(18, 18, 18, 18), Background = new SolidColorBrush(Colors.Transparent), Foreground = Brush("#FFFFFF"), BorderThickness = new Thickness(0) };
-        profile.Content = _session is null ? "◉   Profile and settings" : "◉   Sign out";
-        profile.Click += (_, _) => { _auth.SignOut(); _session = null; ShowLogin(); }; Grid.SetRow(profile, 2); nav.Children.Add(profile);
-        var drawer = new Border { Background = navMaterial, CornerRadius = new CornerRadius(14), Margin = new Thickness(12), Child = nav, BorderBrush = ThemeBrush("SchoologyDividerBrush"), BorderThickness = new Thickness(1) };
-        Grid.SetColumn(drawer, 0); layout.Children.Add(drawer);
-
-        var main = new Grid { Margin = new Thickness(26, 22, 26, 22) };
-        main.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); main.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-        var header = new Grid { Margin = new Thickness(0, 0, 0, 18) };
-        header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) }); header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        header.Children.Add(Text(section == "Recent Activity" ? "Home" : section, 28, true));
-        var tools = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-        tools.Children.Add(Action("Search", (_, _) => ShowSearch())); tools.Children.Add(Action("＋ Create", (_, _) => ShowCreateMenu())); Grid.SetColumn(tools, 1); header.Children.Add(tools);
-        Grid.SetRow(header, 0); main.Children.Add(header);
-        var content = new ScrollViewer { VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
-        content.Content = BuildHomeContent(section); Grid.SetRow(content, 1); main.Children.Add(content);
-        Grid.SetColumn(main, 1); layout.Children.Add(main); Reset(layout);
-    }
-
-    private UIElement BuildHomeContent(string section)
-    {
-        var stack = new StackPanel { Spacing = 0 };
-        if (section == "Recent Activity" || section == "Home")
-        {
-            var top = new Grid { ColumnSpacing = 16 };
-            top.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1.2, GridUnitType.Star) }); top.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            var recent = new StackPanel { Spacing = 12 }; recent.Children.Add(Text("Recent Activity", 20, true));
-            recent.Children.Add(Surface(ActivityItem("Biology", "Cell structure assignment posted", "Ms. Anderson · Today")));
-            recent.Children.Add(Surface(ActivityItem("English Language Arts", "Feedback added to your essay", "Mr. Rivera · Yesterday")));
-            recent.Children.Add(Surface(ActivityItem("World History", "Discussion updated", "Ms. Chen · Yesterday")));
-            var courses = new StackPanel { Spacing = 12 }; courses.Children.Add(Text("My Courses", 20, true));
-            foreach (var c in _courses.Take(4)) courses.Children.Add(Surface(CourseRow(c)));
-            Grid.SetColumn(courses, 1); top.Children.Add(recent); top.Children.Add(courses); stack.Children.Add(top);
-            stack.Children.Add(Text("Your Schoology dashboard", 13));
-        }
-        else if (section == "Courses" || section == "Groups" || section == "School Profile") return BuildThreePane(section);
-        else if (section == "Upcoming") return BuildUpcoming();
+        _page = "home";
+        _section = section;
+        if (section is "Courses" or "Groups" or "School Profile") { ShowThreePane(section); return; }
+        UIElement page;
+        if (section is "Upcoming" or "Recent Activity" or "Home")
+            page = BuildHomeSplitView(section == "Upcoming");
         else
         {
-            stack.Children.Add(Text(section, 22, true)); stack.Children.Add(Surface(Text($"Your {section.ToLowerInvariant()} will appear here when connected to your Schoology account.")));
-            stack.Children.Add(Action("Back to recent activity", (_, _) => ShowHome()));
+            var panel = new StackPanel { Spacing = 12, Margin = new Thickness(24) };
+            panel.Children.Add(Text(section, 26, true));
+            panel.Children.Add(Surface(Text($"The {section.ToLowerInvariant()} view is ready for its Schoology data provider. No sample records are presented as live account data.")));
+            page = panel;
         }
-        return stack;
+        Reset(BuildApplicationShell(section, page));
+    }
+
+    private UIElement BuildHomeSplitView(bool upcomingFirst)
+    {
+        var split = new SplitView
+        {
+            DisplayMode = SplitViewDisplayMode.Inline,
+            IsPaneOpen = true,
+            OpenPaneLength = 420,
+            CompactPaneLength = 0,
+            PanePlacement = SplitViewPanePlacement.Left,
+            Background = new SolidColorBrush(Colors.Transparent)
+        };
+        var primary = new StackPanel { Spacing = 14, Margin = new Thickness(22, 18, 14, 18) };
+        var heading = new Grid();
+        heading.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        heading.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        heading.Children.Add(Text(upcomingFirst ? "Upcoming" : "Recent Activity", 22, true));
+        var toggle = Action("Hide pane", (_, _) => split.IsPaneOpen = !split.IsPaneOpen);
+        toggle.Padding = new Thickness(8, 4, 8, 4);
+        Grid.SetColumn(toggle, 1);
+        heading.Children.Add(toggle);
+        primary.Children.Add(heading);
+        var secondary = new StackPanel { Spacing = 14, Margin = new Thickness(20, 18, 24, 18) };
+        secondary.Children.Add(Text(upcomingFirst ? "Recent Activity" : "Upcoming", 22, true));
+        foreach (var item in upcomingFirst ? BuildUpcomingItems() : BuildRecentActivityItems()) primary.Children.Add(item);
+        foreach (var item in upcomingFirst ? BuildRecentActivityItems() : BuildUpcomingItems()) secondary.Children.Add(item);
+        split.Pane = new ScrollViewer { Content = primary, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+        split.Content = new ScrollViewer { Content = secondary, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+        split.SizeChanged += (_, args) =>
+        {
+            var narrow = args.NewSize.Width < 760;
+            split.DisplayMode = narrow ? SplitViewDisplayMode.Overlay : SplitViewDisplayMode.Inline;
+            if (narrow && split.IsPaneOpen) split.IsPaneOpen = false;
+            else if (!narrow && !split.IsPaneOpen) split.IsPaneOpen = true;
+        };
+        _homeSplitView = split;
+        return split;
+    }
+
+    private IEnumerable<UIElement> BuildRecentActivityItems()
+    {
+        yield return Text("Recent activity from courses and groups will appear here when the Schoology data provider is connected.", 14);
+        yield return Surface(ActivityItem("Recent Activity", "Activity feed", "Waiting for Schoology account data"));
+        yield return Surface(ActivityItem("Courses", "Course updates", "Waiting for Schoology account data"));
+    }
+
+    private IEnumerable<UIElement> BuildUpcomingItems()
+    {
+        yield return Text("Assignments and events will appear here when the Schoology data provider is connected.", 14);
+        yield return Surface(ActivityItem("Upcoming", "Assignments and events", "Waiting for Schoology account data"));
+        yield return Surface(ActivityItem("Calendar", "Due dates", "Waiting for Schoology account data"));
     }
 
     private static UIElement ActivityItem(string course, string title, string meta)
     {
-        var s = new StackPanel { Spacing = 5 }; s.Children.Add(Text(course.ToUpperInvariant(), 11, true)); s.Children.Add(Text(title, 16, true)); s.Children.Add(Text(meta, 12)); return s;
+        var stack = new StackPanel { Spacing = 5 };
+        stack.Children.Add(Text(course.ToUpperInvariant(), 11, true));
+        stack.Children.Add(Text(title, 16, true));
+        stack.Children.Add(Text(meta, 12));
+        return stack;
     }
+
     private static UIElement CourseRow(string name)
     {
-        var g = new Grid { ColumnSpacing = 12 }; g.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto }); g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        var tile = new Border { Width = 42, Height = 42, CornerRadius = new CornerRadius(7), Background = Brush("#2E66A3"), Child = new TextBlock { Text = name[..1], FontSize = 21, FontWeight = Microsoft.UI.Text.FontWeights.Bold, Foreground = Brush("#FFFFFF"), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center } };
-        g.Children.Add(tile); var labels = new StackPanel { Spacing = 3 }; labels.Children.Add(Text(name, 14, true)); labels.Children.Add(Text("Course dashboard", 12)); Grid.SetColumn(labels, 1); g.Children.Add(labels); return g;
+        var grid = new Grid { ColumnSpacing = 12 };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        var tile = new Border { Width = 42, Height = 42, CornerRadius = new CornerRadius(7), Background = Brush("#2E66A3"),
+            Child = new TextBlock { Text = name[..1], FontSize = 21, FontWeight = Microsoft.UI.Text.FontWeights.Bold,
+                Foreground = Brush("#FFFFFF"), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center } };
+        grid.Children.Add(tile);
+        var labels = new StackPanel { Spacing = 3 };
+        labels.Children.Add(Text(name, 14, true));
+        labels.Children.Add(Text("Course", 12));
+        Grid.SetColumn(labels, 1);
+        grid.Children.Add(labels);
+        return grid;
     }
 
     private void ShowUpcoming() => ShowHome("Upcoming");
-    private UIElement BuildUpcoming()
+
+    private void ShowThreePane(string kind)
     {
-        var grid = new Grid { ColumnSpacing = 16 };
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1.1, GridUnitType.Star) }); grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        var upcoming = new StackPanel { Spacing = 12 }; upcoming.Children.Add(Text("Upcoming", 20, true));
-        upcoming.Children.Add(Text("TODAY · THURSDAY, OCTOBER 29", 12, true));
-        upcoming.Children.Add(Surface(ActivityItem("Biology", "Read chapter 6 and complete the worksheet", "Due today · 11:59 PM")));
-        upcoming.Children.Add(Text("TOMORROW · FRIDAY, OCTOBER 30", 12, true));
-        upcoming.Children.Add(Surface(ActivityItem("Algebra II", "Practice set 4.2", "Due tomorrow · 8:00 AM")));
-        upcoming.Children.Add(Text("MONDAY · NOVEMBER 2", 12, true));
-        upcoming.Children.Add(Surface(ActivityItem("World History", "Primary source response", "Due Monday · 3:00 PM")));
-        var calendar = new StackPanel { Spacing = 12 }; calendar.Children.Add(Text("Recent Activity", 20, true));
-        calendar.Children.Add(Surface(ActivityItem("English Language Arts", "Teacher feedback posted", "Today · 9:18 AM")));
-        calendar.Children.Add(Surface(ActivityItem("Computer Science", "New assignment posted", "Yesterday · 2:42 PM")));
-        calendar.Children.Add(Surface(ActivityItem("Robotics Club", "Group update", "Yesterday · 12:15 PM")));
-        grid.Children.Add(upcoming); Grid.SetColumn(calendar, 1); grid.Children.Add(calendar); return grid;
+        _page = kind;
+        _section = kind;
+        _selectedEntity = string.Empty;
+        Reset(BuildApplicationShell(kind, BuildThreePane(kind)));
     }
 
-    private void ShowThreePane(string kind) { _page = kind; var shell = new Grid { Background = ThemeBrush("SchoologySubtleBrush") }; shell.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto }); shell.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-        var top = new Grid { Margin = new Thickness(20, 12, 20, 12), Background = ThemeBrush("SchoologySurfaceBrush") }; top.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) }); top.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto }); top.Children.Add(Text(kind, 23, true)); var back = Action("← Home", (_, _) => ShowHome()); Grid.SetColumn(back, 1); top.Children.Add(back); shell.Children.Add(top); Grid.SetRow(top, 0);
-        var panes = BuildThreePane(kind); Grid.SetRow(panes, 1); shell.Children.Add(panes); Reset(shell); }
-    private Grid BuildThreePane(string kind)
+    private UIElement BuildThreePane(string kind)
     {
-        var grid = new Grid { Margin = new Thickness(16), ColumnSpacing = 12 };
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(270) }); grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(340) }); grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        var list = new StackPanel { Spacing = 8 }; list.Children.Add(Text(kind == "School Profile" ? "School" : $"My {kind}", 18, true));
-        var entries = kind == "Courses" ? _courses : kind == "Groups" ? _groups : new List<string> { "School updates", "Events", "Staff directory" };
-        var detail = new TextBlock(); var body = new StackPanel { Spacing = 12 };
-        foreach (var entry in entries)
+        var split = new SplitView
         {
-            var btn = new Button { Content = entry, HorizontalContentAlignment = HorizontalAlignment.Left, Padding = new Thickness(12), HorizontalAlignment = HorizontalAlignment.Stretch };
-            btn.Click += (_, _) => { detail.Text = entry; body.Children.Clear(); body.Children.Add(Text(entry, 23, true)); body.Children.Add(Text($"{entry} overview", 15)); body.Children.Add(Surface(Text("Updates, resources, and discussions for this space will be loaded here after Schoology account integration is connected.")));
-                body.Children.Add(new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, Children = { Action("Updates", (_, _) => SetPaneTab(body, entry, "Updates")), Action("Materials", (_, _) => SetPaneTab(body, entry, "Materials")), Action("Discussions", (_, _) => SetPaneTab(body, entry, "Discussions")) } }); };
-            list.Children.Add(btn);
-        }
-        var listScroll = new ScrollViewer { Content = list, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
-        var middle = new StackPanel { Spacing = 12 }; middle.Children.Add(Text("Browse", 18, true)); middle.Children.Add(new TextBox { PlaceholderText = $"Search {kind.ToLowerInvariant()}" }); middle.Children.Add(Surface(Text("Choose an item on the left to see its sections.")));
-        var right = new StackPanel { Spacing = 12 }; right.Children.Add(Text("Details", 18, true)); right.Children.Add(Text("Select a course, group, or school section to view its details."));
-        var leftCard = Surface(listScroll); var middleCard = Surface(middle); var rightCard = Surface(right);
-        Grid.SetColumn(leftCard, 0); grid.Children.Add(leftCard); Grid.SetColumn(middleCard, 1); grid.Children.Add(middleCard); Grid.SetColumn(rightCard, 2); grid.Children.Add(rightCard);
-        return grid;
+            DisplayMode = SplitViewDisplayMode.Inline,
+            IsPaneOpen = true,
+            OpenPaneLength = 276,
+            CompactPaneLength = 0,
+            PanePlacement = SplitViewPanePlacement.Left,
+            Background = new SolidColorBrush(Colors.Transparent)
+        };
+        var entries = kind == "Courses" ? _courses : kind == "Groups" ? _groups :
+            new List<string> { "School updates", "Events", "Staff directory" };
+        var master = new StackPanel { Spacing = 8, Margin = new Thickness(16) };
+        master.Children.Add(Text(kind == "School Profile" ? "School" : $"My {kind}", 20, true));
+        master.Children.Add(new TextBox { PlaceholderText = $"Search {kind.ToLowerInvariant()}", Margin = new Thickness(0, 4, 0, 8) });
+        var selectedName = Text("Select an item", 14, true);
+        var selector = new SelectorBar { Margin = new Thickness(0, 0, 0, 12) };
+        var tabs = kind == "School Profile" ? new[] { "Updates", "Events", "Staff" } :
+            new[] { "Updates", "Materials", "Grades", "Members", "Discussions" };
+        foreach (var tab in tabs) selector.Items.Add(new SelectorBarItem { Text = tab });
+        var detail = new Frame
+        {
+            Background = new SolidColorBrush(Colors.Transparent),
+            ContentTransitions = new TransitionCollection
+            {
+                new NavigationThemeTransition
+                {
+                    DefaultNavigationTransitionInfo = new SlideNavigationTransitionInfo { Effect = SlideNavigationTransitionEffect.FromRight }
+                }
+            }
+        };
+        selector.SelectionChanged += (_, _) =>
+        {
+            if (selector.SelectedItem is SelectorBarItem selected && !string.IsNullOrEmpty(_selectedEntity))
+                NavigateShellFrame(detail, BuildEntityTabContent(kind, _selectedEntity, selected.Text), SlideNavigationTransitionEffect.FromRight);
+        };
+        var center = new StackPanel { Spacing = 8, Margin = new Thickness(16) };
+        center.Children.Add(selectedName);
+        center.Children.Add(selector);
+        var entityList = new ListView { SelectionMode = ListViewSelectionMode.Single, IsItemClickEnabled = true,
+            ItemsSource = entries, HorizontalContentAlignment = HorizontalAlignment.Stretch };
+        entityList.ItemClick += (_, args) =>
+        {
+            if (args.ClickedItem is not string entity) return;
+            _selectedEntity = entity;
+            selectedName.Text = entity;
+            selector.SelectedItem = selector.Items.FirstOrDefault();
+            if (selector.SelectedItem is SelectorBarItem first)
+                NavigateShellFrame(detail, BuildEntityTabContent(kind, entity, first.Text), SlideNavigationTransitionEffect.FromRight);
+        };
+        master.Children.Add(entityList);
+        split.Pane = new ScrollViewer { Content = master, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+        var centerPane = Surface(center, new Thickness(14));
+        var rightPane = Surface(detail, new Thickness(14));
+        var columns = new Grid { ColumnSpacing = 0 };
+        columns.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(330) });
+        columns.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        Grid.SetColumn(centerPane, 0);
+        Grid.SetColumn(rightPane, 1);
+        columns.Children.Add(centerPane);
+        columns.Children.Add(rightPane);
+        split.Content = columns;
+        split.SizeChanged += (_, args) =>
+        {
+            var narrow = args.NewSize.Width < 820;
+            split.DisplayMode = narrow ? SplitViewDisplayMode.Overlay : SplitViewDisplayMode.Inline;
+            if (narrow && split.IsPaneOpen) split.IsPaneOpen = false;
+            else if (!narrow && !split.IsPaneOpen) split.IsPaneOpen = true;
+        };
+        return split;
     }
-    private void SetPaneTab(StackPanel body, string entry, string tab)
+
+    private void NavigateShellFrame(Frame frame, UIElement content, SlideNavigationTransitionEffect effect)
     {
-        body.Children.Clear(); body.Children.Add(Text(entry, 23, true)); body.Children.Add(Text(tab, 17, true)); body.Children.Add(Surface(Text($"{tab} for {entry} will appear here when the official Schoology session and API layer are connected.")));
+        frame.Navigate(typeof(SchoologyShellContentPage), content, new SlideNavigationTransitionInfo { Effect = effect });
+    }
+
+    private UIElement BuildEntityTabContent(string kind, string entity, string tab)
+    {
+        var body = new StackPanel { Spacing = 14, Margin = new Thickness(8) };
+        body.Children.Add(Text(entity, 23, true));
+        body.Children.Add(Text(tab, 17, true));
+        body.Children.Add(Surface(Text($"The {tab.ToLowerInvariant()} feed for this {kind.ToLowerInvariant().TrimEnd('s')} will be populated by the native Schoology data layer. This shell does not substitute sample records for account data.")));
+        return body;
     }
 
     private void ShowSearch()
     {
-        var panel = new StackPanel { Spacing = 12 }; panel.Children.Add(Text("Search Schoology", 22, true)); var box = new AutoSuggestBox { PlaceholderText = "Search courses, groups, people, and updates" }; panel.Children.Add(box); panel.Children.Add(Action("Back", (_, _) => ShowHome())); Reset(Surface(panel, new Thickness(28)));
+        _page = "Search";
+        var panel = new StackPanel { Spacing = 12, Margin = new Thickness(24) };
+        panel.Children.Add(Text("Search Schoology", 22, true));
+        panel.Children.Add(new AutoSuggestBox { PlaceholderText = "Search courses, groups, people, and updates" });
+        panel.Children.Add(Action("Back", (_, _) => ShowHome()));
+        Reset(BuildApplicationShell("Recent Activity", panel));
     }
     private async void ShowCreateMenu()
     {
         var dialog = new ContentDialog { Title = "Create", Content = "Choose what you want to create. Actions will be connected to Schoology permissions and APIs in a later phase.", PrimaryButtonText = "Post an update", SecondaryButtonText = "Create event", CloseButtonText = "Cancel", XamlRoot = _root.XamlRoot };
         var result = await dialog.ShowAsync(); if (result == ContentDialogResult.Primary || result == ContentDialogResult.Secondary) { var info = new ContentDialog { Title = result == ContentDialogResult.Primary ? "Post an update" : "Create event", Content = "This action is not connected until Schoology authentication and permissions are implemented.", CloseButtonText = "OK", XamlRoot = _root.XamlRoot }; await info.ShowAsync(); }
+    }
+}
+
+internal sealed class SchoologyShellContentPage : Page
+{
+    public SchoologyShellContentPage() => NavigationCacheMode = NavigationCacheMode.Disabled;
+
+    protected override void OnNavigatedTo(NavigationEventArgs e)
+    {
+        base.OnNavigatedTo(e);
+        if (e.Parameter is UIElement content) Content = content;
     }
 }
