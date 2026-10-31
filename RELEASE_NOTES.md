@@ -1,3 +1,14 @@
+## [2026.10.0-port.24] - 2026-10-31
+
+- Refresh the README to document the current native WinUI feature set, build/release workflow, and reference-source policy.
+- Replace the nine embedded Schoology folder PNG variants with one native WinUI folder symbol tinted from its folder color metadata.
+- Resolve inbox, unread, sent, and message-thread participants through Schoology user profiles; show profile photos beside names.
+- Match the Tauri port.28 OAuth signature behavior for form POSTs so body fields are not incorrectly included in the OAuth signature.
+- Capture web-session Set-Cookie headers across redirects, retain the HttpOnly SESS cookie, and normalize cookie domains for WebView2.
+- Reduce group discussion page size to the Tauri port.28 limit and retry transient HTTP 429 responses with bounded backoff.
+- Add contextual assignment Create/Comment commands and connected content transitions between Info and Comments.
+- Replace release asset PATCH/overwrite publishing with GitHub CLI release create/edit and clobber uploads for the architecture installers.
+
 ## [2026.10.0-port.23] - 2026-10-31
 
 - Fixed shared WebView session preparation by sending the official bare Schoology app-domain value to the session-start endpoint.

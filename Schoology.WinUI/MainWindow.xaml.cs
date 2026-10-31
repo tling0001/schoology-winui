@@ -45,6 +45,10 @@ public sealed partial class MainWindow : Window
     private readonly ObservableCollection<SchoologyEntity> _courses = new();
     private readonly ObservableCollection<SchoologyEntity> _groups = new();
     private readonly Dictionary<long, JsonElement> _userProfileCache = new();
+    private long _activeAssignmentSectionId;
+    private long _activeAssignmentId;
+    private bool _activeAssignmentAllowsComments;
+    private bool _activeAssignmentAllowsSubmission;
     private WebView2? _sharedWebView;
     private CoreWebView2Environment? _sharedWebViewEnvironment;
     private bool _sharedWebViewInitialized;
@@ -1204,7 +1208,7 @@ public sealed partial class MainWindow : Window
             Spacing = 8,
             VerticalAlignment = VerticalAlignment.Center
         };
-        var createButton = Action("＋ Create", (_, _) => ShowCreateMenu(), true);
+        var createButton = Action("＋ Create", (_, _) => HandleTitleBarCreateClick(), true);
         AutomationProperties.SetAutomationId(createButton, "TitleBarCreateButton");
         _titleBarCreateButton = createButton;
         commands.Children.Add(createButton);
@@ -1338,6 +1342,79 @@ public sealed partial class MainWindow : Window
         shell.Children.Add(nav);
         SetTitleBar(titleBar);
         return shell;
+    }
+
+    private void HandleTitleBarCreateClick()
+    {
+        if (_titleBarCreateContext == "assignment-comment")
+        {
+            _ = ShowAssignmentCommentDialogAsync();
+            return;
+        }
+        if (_titleBarCreateContext == "assignment-actions")
+        {
+            _ = ShowAssignmentActionsDialogAsync();
+            return;
+        }
+        ShowCreateMenu();
+    }
+
+    private void SetTitleBarCreateContext(string context)
+    {
+        _titleBarCreateContext = context;
+        if (_titleBarCreateButton is null) return;
+        _titleBarCreateButton.Visibility = string.IsNullOrEmpty(context) ? Visibility.Collapsed : Visibility.Visible;
+        _titleBarCreateButton.Content = context switch
+        {
+            "assignment-comment" => "＋ Comment",
+            "assignment-actions" => "＋ Create",
+            "course-update" or "group-update" => "＋ Post update",
+            _ => "＋ Create"
+        };
+        AutomationProperties.SetName(_titleBarCreateButton, context switch
+        {
+            "assignment-comment" => "Create assignment comment",
+            "assignment-actions" => "Assignment actions",
+            "course-update" => "Post a course update",
+            "group-update" => "Post a group update",
+            "home" => "Create Schoology content",
+            _ => "Create"
+        });
+    }
+
+    private async Task ShowAssignmentCommentDialogAsync()
+    {
+        var session = _session;
+        if (session is null || _activeAssignmentSectionId <= 0 || _activeAssignmentId <= 0) return;
+        var body = new TextBox { Header = "Comment", PlaceholderText = "Post a comment…",
+            AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, MinHeight = 110 };
+        var dialog = new ContentDialog
+        {
+            Title = "Create comment", Content = body, PrimaryButtonText = "Post",
+            CloseButtonText = "Cancel", DefaultButton = ContentDialogButton.Primary, XamlRoot = _root.XamlRoot
+        };
+        if (await dialog.ShowAsync() != ContentDialogResult.Primary || string.IsNullOrWhiteSpace(body.Text)) return;
+        try
+        {
+            using var result = await _api.AddAssignmentCommentAsync(session, _activeAssignmentSectionId,
+                _activeAssignmentId, body.Text.Trim());
+            await ShowAssignmentDetailsAsync(_activeAssignmentSectionId,
+                new SchoologyApiRecord("Assignment", string.Empty,
+                    JsonDocument.Parse("{\"id\":" + _activeAssignmentId + "}").RootElement.Clone()));
+        }
+        catch (Exception ex) { await ShowApiErrorAsync("Unable to post assignment comment", ex.Message); }
+    }
+
+    private async Task ShowAssignmentActionsDialogAsync()
+    {
+        if (_session is null || !_activeAssignmentAllowsSubmission) return;
+        var dialog = new ContentDialog
+        {
+            Title = "Assignment actions",
+            Content = Text("This assignment accepts submissions. The current WinUI detail view can display submission information; native upload and text-submission creation are not yet available here.", 13),
+            CloseButtonText = "Close", XamlRoot = _root.XamlRoot
+        };
+        await dialog.ShowAsync();
     }
 
     private void UpdateTitleBarCreateButton(string section, string? tab)
@@ -2936,13 +3013,17 @@ public sealed partial class MainWindow : Window
             var description = ProfileValue(assignment, "description", "body", "description_richtext", "descriptionRichtext");
             var due = ProfileValue(assignment, "due", "due_date", "dueDate");
             var points = ProfileValue(assignment, "max_points", "maxPoints", "points");
-            var allowDropboxValue = ProfileValue(assignment, "allow_dropbox", "allowDropbox");
-            var submissionsEnabled = (assignment.TryGetProperty("allow_dropbox", out var allowDropbox) &&
-                    (allowDropbox.ValueKind == JsonValueKind.True || allowDropbox.ToString() is "1" or "true" or "TRUE")) ||
-                (assignment.TryGetProperty("allowDropbox", out var camelDropbox) &&
-                    (camelDropbox.ValueKind == JsonValueKind.True || camelDropbox.ToString() is "1" or "true" or "TRUE")) ||
-                allowDropboxValue is "1" or "true" or "TRUE";
+            var submissionsEnabled = JsonBoolean(assignment,
+                "allow_dropbox", "allowDropbox", "allow_submission", "allowSubmission");
             var gradeItemId = JsonLong(assignment, "grade_item_id", "gradeItemId");
+            var commentsEnabled = JsonBoolean(assignment,
+                "allow_discussion", "allowDiscussion", "allow_comments", "allowComments",
+                "comments_enabled", "commentsEnabled");
+            _activeAssignmentSectionId = sectionId;
+            _activeAssignmentId = assignmentId;
+            _activeAssignmentAllowsComments = commentsEnabled;
+            _activeAssignmentAllowsSubmission = submissionsEnabled;
+            SetTitleBarCreateContext(string.Empty);
             var assignmentType = (ProfileValue(assignment, "assignment_type", "assignmentType", "type") ?? "").ToLowerInvariant();
             var launchUrl = ProfileValue(assignment, "web_url", "webUrl", "launch_url", "launchUrl", "url", "href", "location");
             if ((assignmentType is "lti" or "lti_submission") && !string.IsNullOrWhiteSpace(launchUrl))
@@ -3035,7 +3116,7 @@ public sealed partial class MainWindow : Window
             var wideInfo = new SelectorBarItem { Text = "Info" };
             var wideComments = new SelectorBarItem { Text = "Comments" };
             wideSelector.Items.Add(wideInfo);
-            wideSelector.Items.Add(wideComments);
+            if (commentsEnabled) wideSelector.Items.Add(wideComments);
             Grid.SetRow(wideSelector, 0);
             wide.Children.Add(wideSelector);
             var wideFrame = new Frame { Background = new SolidColorBrush(Colors.Transparent) };
@@ -3048,7 +3129,32 @@ public sealed partial class MainWindow : Window
                 Grid.SetRowSpan(pane, 2);
                 wide.Children.Add(pane);
             }
-            void SelectWide(SelectorBarItem item) => wideFrame.Content = item == wideComments ? BuildCommentsView() : BuildInfoView();
+            void SetConnectedFrameContent(Frame frame, UIElement nextContent)
+            {
+                var animation = AnimationsEnabled && frame.Content is UIElement currentContent
+                    ? ConnectedAnimationService.GetForCurrentView().PrepareToAnimate("AssignmentTabContent", currentContent)
+                    : null;
+                frame.Content = nextContent;
+                if (animation is not null)
+                    nextContent.Loaded += (_, _) => animation.TryStart(nextContent);
+            }
+            void UpdateAssignmentCreateContext(bool isWide, string selectedTab)
+            {
+                var context = isWide && submissionsEnabled && (selectedTab is "Info" or "Comments")
+                    ? "assignment-actions"
+                    : selectedTab == "Comments" && commentsEnabled
+                        ? "assignment-comment"
+                        : !isWide && selectedTab == "Submissions" && submissionsEnabled
+                            ? "assignment-actions"
+                            : string.Empty;
+                SetTitleBarCreateContext(context);
+            }
+            void SelectWide(SelectorBarItem item)
+            {
+                var selectedTab = item == wideComments ? "Comments" : "Info";
+                SetConnectedFrameContent(wideFrame, selectedTab == "Comments" ? BuildCommentsView() : BuildInfoView());
+                UpdateAssignmentCreateContext(true, selectedTab);
+            }
             wideSelector.SelectionChanged += (_, _) => { if (wideSelector.SelectedItem is SelectorBarItem item) SelectWide(item); };
             wideSelector.SelectedItem = wideInfo;
             SelectWide(wideInfo);
@@ -3061,16 +3167,22 @@ public sealed partial class MainWindow : Window
             var narrowComments = new SelectorBarItem { Text = "Comments" };
             var narrowSubmissions = new SelectorBarItem { Text = "Submissions" };
             narrowSelector.Items.Add(narrowInfo);
-            narrowSelector.Items.Add(narrowComments);
+            if (commentsEnabled) narrowSelector.Items.Add(narrowComments);
             if (submissionsEnabled) narrowSelector.Items.Add(narrowSubmissions);
             Grid.SetRow(narrowSelector, 0);
             narrow.Children.Add(narrowSelector);
             var narrowFrame = new Frame { Background = new SolidColorBrush(Colors.Transparent) };
             Grid.SetRow(narrowFrame, 1);
             narrow.Children.Add(narrowFrame);
-            void SelectNarrow(SelectorBarItem item) =>
-                narrowFrame.Content = item == narrowComments ? BuildCommentsView() :
-                    item == narrowSubmissions && submissionsEnabled ? BuildSubmissionsView() : BuildInfoView();
+            void SelectNarrow(SelectorBarItem item)
+            {
+                var selectedTab = item == narrowComments ? "Comments" :
+                    item == narrowSubmissions && submissionsEnabled ? "Submissions" : "Info";
+                var nextContent = selectedTab == "Comments" ? BuildCommentsView() :
+                    selectedTab == "Submissions" ? BuildSubmissionsView() : BuildInfoView();
+                SetConnectedFrameContent(narrowFrame, nextContent);
+                UpdateAssignmentCreateContext(false, selectedTab);
+            }
             narrowSelector.SelectionChanged += (_, _) => { if (narrowSelector.SelectedItem is SelectorBarItem item) SelectNarrow(item); };
             narrowSelector.SelectedItem = narrowInfo;
             SelectNarrow(narrowInfo);
@@ -3221,9 +3333,7 @@ public sealed partial class MainWindow : Window
                 row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
                 if (tab == "Materials" && IsFolderRecord(record.Data))
                 {
-                    var folderIcon = new Image { Width = 32, Height = 32, Stretch = Microsoft.UI.Xaml.Media.Stretch.Uniform };
-                    row.Children.Add(folderIcon);
-                    _ = ApplyFolderIconAsync(folderIcon, FolderColorName(record.Data));
+                    row.Children.Add(FolderIcons.CreateIcon(FolderColorName(record.Data), 32));
                 }
                 else row.Children.Add(new FontIcon { Glyph = tab == "Materials" ? MaterialGlyph(record.Data) : "\uE8A5",
                     FontSize = 22, Foreground = ThemeBrush("SchoologyBlueBrush"), Width = 32 });
@@ -3287,10 +3397,7 @@ public sealed partial class MainWindow : Window
                 row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
                 if (IsFolderRecord(record.Data))
                 {
-                    var folderIcon = new Image { Width = 25, Height = 25, Stretch = Microsoft.UI.Xaml.Media.Stretch.Uniform,
-                        VerticalAlignment = VerticalAlignment.Center };
-                    row.Children.Add(folderIcon);
-                    _ = ApplyFolderIconAsync(folderIcon, FolderColorName(record.Data));
+                    row.Children.Add(FolderIcons.CreateIcon(FolderColorName(record.Data), 25));
                 }
                 else row.Children.Add(new FontIcon { Glyph = MaterialGlyph(record.Data), FontSize = 23,
                     Foreground = ThemeBrush("SchoologyBlueBrush"), VerticalAlignment = VerticalAlignment.Center });
@@ -3624,11 +3731,6 @@ public sealed partial class MainWindow : Window
         var color = (ProfileValue(data, "color", "folder_color", "folderColor") ?? "gray").Trim().ToLowerInvariant();
         return color is "black" or "blue" or "gray" or "green" or "orange" or "pink" or "purple" or "red" or "yellow"
             ? color : "gray";
-    }
-    private static async Task ApplyFolderIconAsync(Image image, string color)
-    {
-        try { image.Source = await FolderIcons.LoadAsync(color); }
-        catch (Exception ex) { App.WriteStartupLog("Could not load an embedded Schoology folder icon.", ex); }
     }
     private static string MaterialGlyph(System.Text.Json.JsonElement data)
     {
@@ -4283,6 +4385,37 @@ public sealed partial class MainWindow : Window
             return !read && JsonBoolean(data, "is_new", "new_message");
         }
 
+        long MessagePersonId(SchoologyApiRecord record, string mode)
+        {
+            if (mode == "Sent")
+            {
+                var recipientIds = ProfileValue(record.Data, "recipient_ids", "recipientIds", "recipient_id", "recipientId");
+                if (!string.IsNullOrWhiteSpace(recipientIds) &&
+                    long.TryParse(recipientIds.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries).FirstOrDefault(), out var recipientId))
+                    return recipientId;
+            }
+            return JsonLong(record.Data, "author_id", "authorId", "uid", "user_id", "sender_id", "senderId");
+        }
+
+        async Task ResolveMessagePeopleAsync(IReadOnlyList<SchoologyApiRecord> records, string mode)
+        {
+            if (_session is null) return;
+            var ids = records.Select(record => MessagePersonId(record, mode))
+                .Where(id => id > 0 && !_userProfileCache.ContainsKey(id)).Distinct().ToArray();
+            await Task.WhenAll(ids.Select(async id =>
+            {
+                try
+                {
+                    using var profileDocument = await _api.GetUserAsync(_session, id);
+                    var profile = profileDocument.RootElement;
+                    if (profile.ValueKind == System.Text.Json.JsonValueKind.Object &&
+                        profile.TryGetProperty("user", out var nestedUser)) profile = nestedUser;
+                    _userProfileCache[id] = profile.Clone();
+                }
+                catch (Exception ex) { App.WriteStartupLog($"Could not resolve message participant {id}.", ex); }
+            }));
+        }
+
         void ShowDetailPlaceholder(string title, string description)
         {
             messageSelected = false;
@@ -4311,17 +4444,39 @@ public sealed partial class MainWindow : Window
                 var data = record.Data;
                 var id = JsonLong(data, "id", "message_id", "messageId");
                 var isUnread = currentMode != "Sent" && IsUnread(record);
-                var personName = currentMode == "Sent"
-                    ? ProfileValue(data, "recipient_name", "recipient_display_name", "to_name") ?? "To recipient"
-                    : ProfileValue(data, "author_name", "user_name", "name_display", "sender_name") ?? "Schoology user";
+                var personId = MessagePersonId(record, currentMode);
+                var personProfile = personId > 0 && _userProfileCache.TryGetValue(personId, out var cachedPerson)
+                    ? cachedPerson : default;
+                var personName = (personProfile.ValueKind == System.Text.Json.JsonValueKind.Object
+                        ? ProfileValue(personProfile, "name_display", "display_name", "name", "username") : null) ??
+                    (currentMode == "Sent"
+                        ? ProfileValue(data, "recipient_name", "recipient_display_name", "to_name")
+                        : ProfileValue(data, "author_name", "user_name", "name_display", "sender_name")) ??
+                    (personId > 0 ? $"User {personId}" : currentMode == "Sent" ? "To recipient" : "Schoology user");
+                var picture = personProfile.ValueKind == System.Text.Json.JsonValueKind.Object
+                    ? ProfileValue(personProfile, "picture_url", "pictureUrl", "picture", "photo_url", "avatar_url") : null;
                 var subject = ProfileValue(data, "subject", "message_subject", "title") ?? record.Title;
                 var snippet = ProfileValue(data, "body", "message", "text", "message_body") ?? record.Subtitle;
                 var row = new Grid { ColumnSpacing = 10, Padding = new Thickness(8, 10, 8, 10) };
                 row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(4) });
+                row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(40) });
                 row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
                 var marker = new Border { Width = 3, CornerRadius = new CornerRadius(2),
                     Background = isUnread ? ThemeBrush("SchoologyBlueBrush") : new SolidColorBrush(Colors.Transparent) };
                 row.Children.Add(marker);
+                var avatar = new Border { Width = 36, Height = 36, CornerRadius = new CornerRadius(18),
+                    Background = ThemeBrush("SchoologySubtleBrush"), VerticalAlignment = VerticalAlignment.Center,
+                    HorizontalAlignment = HorizontalAlignment.Center };
+                if (!string.IsNullOrWhiteSpace(picture))
+                {
+                    var avatarImage = new Image { Width = 36, Height = 36, Stretch = Microsoft.UI.Xaml.Media.Stretch.UniformToFill };
+                    avatar.Child = avatarImage;
+                    _ = LoadPostImageAsync(avatarImage, picture);
+                }
+                else avatar.Child = new TextBlock { Text = string.IsNullOrWhiteSpace(personName) ? "?" : personName[..1].ToUpperInvariant(),
+                    HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center,
+                    FontWeight = Microsoft.UI.Text.FontWeights.SemiBold };
+                Grid.SetColumn(avatar, 1); row.Children.Add(avatar);
                 var textStack = new StackPanel { Spacing = 3 };
                 var sender = Text(personName, 13, isUnread);
                 var subjectText = Text(subject, 13, isUnread);
@@ -4330,7 +4485,7 @@ public sealed partial class MainWindow : Window
                 preview.MaxLines = 2;
                 preview.Foreground = ThemeBrush("SchoologyMutedTextBrush");
                 textStack.Children.Add(sender); textStack.Children.Add(subjectText); textStack.Children.Add(preview);
-                Grid.SetColumn(textStack, 1); row.Children.Add(textStack);
+                Grid.SetColumn(textStack, 2); row.Children.Add(textStack);
                 var item = new ListViewItem { Content = row, Tag = record,
                     HorizontalContentAlignment = HorizontalAlignment.Stretch };
                 AutomationProperties.SetName(item, $"{personName}: {subject}");
@@ -4368,6 +4523,7 @@ public sealed partial class MainWindow : Window
                     using var inbox = await _api.GetMessagesAsync(_session, false);
                     inboxRecords = SchoologyApiClient.ReadRecords(inbox.RootElement, "message", "messages");
                 }
+                await ResolveMessagePeopleAsync(mode == "Sent" ? sentRecords : inboxRecords, mode);
                 loading = false;
                 RenderMessages();
                 status.Text = recordsCountText(mode);
@@ -4451,22 +4607,41 @@ public sealed partial class MainWindow : Window
                 foreach (var message in threadMessages)
                 {
                     var authorId = JsonLong(message, "author_id", "authorId", "uid", "user_id", "sender_id", "senderId");
-                    var profile = authorId > 0 && _userProfileCache.TryGetValue(authorId, out var cachedProfile) ? cachedProfile : default;
+                    var profile = authorId == _session.UserId ? _session.User :
+                        authorId > 0 && _userProfileCache.TryGetValue(authorId, out var cachedProfile) ? cachedProfile : default;
+                    if (profile.ValueKind == System.Text.Json.JsonValueKind.Object &&
+                        profile.TryGetProperty("user", out var nestedAuthor)) profile = nestedAuthor;
                     var authorName = authorId == _session.UserId ? "You" :
-                        (profile.ValueKind == System.Text.Json.JsonValueKind.Object ? ProfileValue(profile, "name_display", "display_name", "name") : null) ??
-                        ProfileValue(message, "author_name", "sender_name", "user_name", "name_display") ?? sender;
+                        (profile.ValueKind == System.Text.Json.JsonValueKind.Object ? ProfileValue(profile, "name_display", "display_name", "name", "username") : null) ??
+                        ProfileValue(message, "author_name", "sender_name", "user_name", "name_display") ??
+                        (authorId > 0 ? $"User {authorId}" : sender);
+                    var authorPicture = profile.ValueKind == System.Text.Json.JsonValueKind.Object
+                        ? ProfileValue(profile, "picture_url", "pictureUrl", "picture", "photo_url", "avatar_url") : null;
                     var timestamp = ProfileValue(message, "last_updated", "lastUpdated", "created", "created_at", "timestamp");
                     var messageCard = new StackPanel { Spacing = 8, Padding = new Thickness(14) };
                     var messageHeader = new Grid { ColumnSpacing = 8 };
+                    messageHeader.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(36) });
                     messageHeader.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
                     messageHeader.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+                    var authorAvatar = new Border { Width = 32, Height = 32, CornerRadius = new CornerRadius(16),
+                        Background = ThemeBrush("SchoologySubtleBrush"), VerticalAlignment = VerticalAlignment.Center };
+                    if (!string.IsNullOrWhiteSpace(authorPicture))
+                    {
+                        var authorImage = new Image { Width = 32, Height = 32, Stretch = Microsoft.UI.Xaml.Media.Stretch.UniformToFill };
+                        authorAvatar.Child = authorImage;
+                        _ = LoadPostImageAsync(authorImage, authorPicture);
+                    }
+                    else authorAvatar.Child = new TextBlock { Text = string.IsNullOrWhiteSpace(authorName) ? "?" : authorName[..1].ToUpperInvariant(),
+                        HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center,
+                        FontWeight = Microsoft.UI.Text.FontWeights.SemiBold };
+                    messageHeader.Children.Add(authorAvatar);
                     var authorText = Text(authorName, 13, true);
-                    messageHeader.Children.Add(authorText);
+                    Grid.SetColumn(authorText, 1); messageHeader.Children.Add(authorText);
                     if (!string.IsNullOrWhiteSpace(timestamp))
                     {
                         var timeText = Text(timestamp, 11);
                         timeText.Foreground = ThemeBrush("SchoologyMutedTextBrush");
-                        Grid.SetColumn(timeText, 1); messageHeader.Children.Add(timeText);
+                        Grid.SetColumn(timeText, 2); messageHeader.Children.Add(timeText);
                     }
                     messageCard.Children.Add(messageHeader);
                     var messageBodyText = ProfileValue(message, "message", "body", "text", "message_body", "content");

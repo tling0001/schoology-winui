@@ -327,7 +327,8 @@ internal sealed partial class SchoologyAuthService
         string secret,
         string? scannedQrData,
         CancellationToken cancellationToken,
-        IReadOnlyDictionary<string, string>? formParameters = null)
+        IReadOnlyDictionary<string, string>? formParameters = null,
+        ICollection<string>? redirectSetCookieHeaders = null)
     {
         var currentUri = new Uri(rawUrl, UriKind.Absolute);
         var expectedHost = currentUri.IdnHost;
@@ -342,6 +343,8 @@ internal sealed partial class SchoologyAuthService
             var response = await OAuthHttp.SendAsync(
                 request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
 
+            if (redirectSetCookieHeaders is not null && response.Headers.TryGetValues("Set-Cookie", out var redirectCookies))
+                foreach (var cookieHeader in redirectCookies) redirectSetCookieHeaders.Add(cookieHeader);
             var status = (int)response.StatusCode;
             var location = response.Headers.Location;
             if (status is not (301 or 302 or 303 or 307 or 308) || location is null)

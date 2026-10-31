@@ -115,6 +115,18 @@ internal sealed class SchoologyApiClient
                             ["start"] = "0", ["limit"] = "20"
                         }
                         : new Dictionary<string, string> { ["limit"] = "100" };
+        if (tab == "Discussions")
+        {
+            parameters["limit"] = "50";
+            for (var attempt = 0; ; attempt++)
+            {
+                try { return await _auth.GetApiJsonAsync(session, $"{realm}/{entityId}/{resource}", parameters, cancellationToken); }
+                catch (InvalidOperationException ex) when (attempt < 2 && ex.Message.Contains("HTTP 429", StringComparison.Ordinal))
+                {
+                    await Task.Delay(TimeSpan.FromMilliseconds(800 * (attempt + 1)), cancellationToken);
+                }
+            }
+        }
         return await _auth.GetApiJsonAsync(session, $"{realm}/{entityId}/{resource}", parameters, cancellationToken);
     }
 
@@ -213,6 +225,13 @@ internal sealed class SchoologyApiClient
             {
                 ["start"] = "0", ["limit"] = "100", ["with_attachments"] = "TRUE", ["richtext"] = "1"
             }, ct);
+
+    internal Task<JsonDocument> AddAssignmentCommentAsync(
+        SchoologyAuthService.Session session, long sectionId, long assignmentId, string comment,
+        CancellationToken ct = default) =>
+        _auth.SendApiJsonBodyAsync(session, HttpMethod.Post,
+            $"course/{sectionId}/materials/assignments/{assignmentId}/create_comment",
+            new { comment, parent_id = 0 }, ct);
 
     // Official Android uses the section realm, grade-item ID, and current user ID.
     internal Task<JsonDocument> GetAssignmentSubmissionAsync(
@@ -343,7 +362,7 @@ internal sealed partial class SchoologyAuthService
             throw new InvalidOperationException("The Schoology API path is invalid.");
         var url = $"https://{ApiHost}/v1/{normalizedPath}";
         using var response = await SendSignedRequestAsync(method, url,
-            () => new FormUrlEncodedContent(fields), session.Token, session.Secret, null, cancellationToken, fields);
+            () => new FormUrlEncodedContent(fields), session.Token, session.Secret, null, cancellationToken);
         var body = await ReadResponseTextAsync(response.Content, cancellationToken);
         if (!response.IsSuccessStatusCode)
             throw new InvalidOperationException(ReadableError(body, "Schoology could not update this item", response.StatusCode));
@@ -403,7 +422,9 @@ internal sealed partial class SchoologyAuthService
         var defaultDomain = WebHost.EndsWith("schoologyca.com", StringComparison.OrdinalIgnoreCase) ? ".schoologyca.com" : ".schoology.com";
         // Android CSOAssignment.startSession(domain) sends the bare app host (for example app.schoology.com), not a URL with a scheme.
         var url = $"https://{ApiHost}/v1/sessionstart?domain={Uri.EscapeDataString(WebHost)}";
-        using var response = await SendSignedRequestAsync(HttpMethod.Get, url, () => null, session.Token, session.Secret, null, ct);
+        var redirectCookies = new List<string>();
+        using var response = await SendSignedRequestAsync(HttpMethod.Get, url, () => null,
+            session.Token, session.Secret, null, ct, redirectSetCookieHeaders: redirectCookies);
         var body = await ReadResponseTextAsync(response.Content, ct);
         if (!response.IsSuccessStatusCode)
             throw new InvalidOperationException(ReadableError(body, "Schoology could not prepare the browser session", response.StatusCode));
@@ -422,12 +443,15 @@ internal sealed partial class SchoologyAuthService
                 value.Any(char.IsControl) || value.IndexOfAny([';', ',']) >= 0 ||
                 !validDomain || !appliesToTarget) return;
             // Tauri explicitly scopes the session cookie to Schoology sibling hosts.
-            domain = "." + host;
-            // The Tauri/Android web session installs all Schoology cookies as Secure.
+            // Use the canonical host form expected by WebView2; a parent-domain
+            // cookie still applies to its Schoology app subdomains.
+            domain = host;
             cookies[name] = new(name, value, domain, path, httpOnly, true);
         }
+        var allCookieHeaders = redirectCookies.ToList();
         if (response.Headers.TryGetValues("Set-Cookie", out var headers))
-        foreach (var header in headers)
+            allCookieHeaders.AddRange(headers);
+        foreach (var header in allCookieHeaders)
         {
             var parts = header.Split(';', StringSplitOptions.TrimEntries);
             var pair = parts.FirstOrDefault();
@@ -467,6 +491,8 @@ internal sealed partial class SchoologyAuthService
         catch (JsonException) { }
         var mobilePair = MobileCookie.Split('=', 2);
         if (mobilePair.Length == 2) Add(mobilePair[0], mobilePair[1], defaultDomain, "/", false, true);
+        if (!cookies.TryGetValue("SESS", out var sessCookie) || string.IsNullOrWhiteSpace(sessCookie.Value))
+            throw new InvalidOperationException("Schoology did not return a usable SESS browser cookie. The session-start response contained no SESS Set-Cookie header or cookie object.");
         if (cookies.Count == 0) throw new InvalidOperationException("Schoology did not return browser session cookies.");
         return cookies.Values.ToArray();
     }
