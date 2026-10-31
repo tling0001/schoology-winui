@@ -1,5 +1,12 @@
 # Release notes
 
+## [2026.10.0-port.28] - 2026-10-31
+
+- Resolve the reported CA1822 and CA1859 analyzer warnings by narrowing private helper return types and marking stateless helpers static.
+- Load Schoology profile pictures through the authenticated Schoology file request path so protected avatar images render in WinUI.
+- Avoid a detached-source connected-animation failure when switching assignment detail tabs; use the native WinUI navigation transition instead.
+
+
 ## [2026.10.0-port.27] - 2026-10-31
 
 - Fix release-note section matching so GitHub Actions can publish versioned releases.

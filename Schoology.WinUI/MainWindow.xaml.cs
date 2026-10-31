@@ -183,7 +183,7 @@ public sealed partial class MainWindow : Window, IAsyncDisposable
         public uint dwInfoFlags; public Guid guidItem; public IntPtr hBalloonIcon;
     }
     [StructLayout(LayoutKind.Sequential)] private struct NativePoint { public int X; public int Y; }
-    private bool BackgroundModeEnabled => string.Equals(ReadAppSetting("RunInBackgroundAtStartup", "true"), "true", StringComparison.OrdinalIgnoreCase);
+    private static bool BackgroundModeEnabled => string.Equals(ReadAppSetting("RunInBackgroundAtStartup", "true"), "true", StringComparison.OrdinalIgnoreCase);
     private void ConfigureStartupRegistration()
     {
         try
@@ -356,7 +356,7 @@ public sealed partial class MainWindow : Window, IAsyncDisposable
         Text = value, FontSize = size, FontWeight = bold ? Microsoft.UI.Text.FontWeights.SemiBold : Microsoft.UI.Text.FontWeights.Normal,
         TextWrapping = TextWrapping.Wrap, VerticalAlignment = VerticalAlignment.Center
     };
-    private UIElement EmptyState(string title, string? description = null)
+    private Border EmptyState(string title, string? description = null)
     {
         var content = new StackPanel
         {
@@ -1193,7 +1193,7 @@ public sealed partial class MainWindow : Window, IAsyncDisposable
         await dialog.ShowAsync();
     }
 
-    private UIElement BuildApplicationShell(string section, UIElement content)
+    private Grid BuildApplicationShell(string section, UIElement content)
     {
         var shell = new Grid { Background = ThemeBrush("SchoologySubtleBrush") };
         // NavigationView fills the window so its acrylic pane continues behind the custom title bar.
@@ -1589,7 +1589,7 @@ public sealed partial class MainWindow : Window, IAsyncDisposable
         }
     }
 
-    private UIElement BuildHomeSplitView(bool upcomingFirst)
+    private Grid BuildHomeSplitView(bool upcomingFirst)
     {
         // Landscape mirrors the classic port's two-pane home proportions.
         // Portrait changes the task model to a single content surface with
@@ -1671,7 +1671,7 @@ public sealed partial class MainWindow : Window, IAsyncDisposable
         return root;
     }
 
-    private UIElement BuildRecentActivityContent()
+    private ScrollViewer BuildRecentActivityContent()
     {
         var panel = new StackPanel { Spacing = 10, Margin = new Thickness(4, 2, 10, 8) };
         var status = Text("Loading recent Schoology activity…", 13);
@@ -1739,7 +1739,7 @@ public sealed partial class MainWindow : Window, IAsyncDisposable
         }
     }
 
-    private UIElement BuildCourseDashboardContent()
+    private GridView BuildCourseDashboardContent()
     {
         // Tauri uses responsive course cards with a wide image, title and period.
         // GridView keeps the same wrapping layout and virtualizes large course lists.
@@ -1919,7 +1919,7 @@ public sealed partial class MainWindow : Window, IAsyncDisposable
         catch (Exception ex) { App.WriteStartupLog("Could not display a Windows app notification.", ex); }
     }
 
-    private UIElement BuildUpcomingContent()
+    private Grid BuildUpcomingContent()
     {
         var root = new Grid { RowSpacing = 8 };
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
@@ -2063,7 +2063,7 @@ public sealed partial class MainWindow : Window, IAsyncDisposable
         }
     }
 
-    private UIElement BuildCalendarPage()
+    private Grid BuildCalendarPage()
     {
         var layout = new Grid { Margin = new Thickness(18), ColumnSpacing = 16, RowSpacing = 12 };
         layout.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(340) });
@@ -2123,7 +2123,7 @@ public sealed partial class MainWindow : Window, IAsyncDisposable
         public override string ToString() => Title;
     }
 
-    private UIElement BuildNotificationsPage()
+    private Grid BuildNotificationsPage()
     {
         var root = new Grid { Margin = new Thickness(24), RowSpacing = 10 };
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
@@ -2268,7 +2268,7 @@ public sealed partial class MainWindow : Window, IAsyncDisposable
         await OpenSharedWebViewAsync(uri.AbsoluteUri, "Notification", onBack: () => ShowHome("Notifications"));
     }
 
-    private UIElement BuildRequestsPage()
+    private Grid BuildRequestsPage()
     {
         var root = new Grid { Margin = new Thickness(24), RowSpacing = 10 };
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
@@ -2384,7 +2384,7 @@ public sealed partial class MainWindow : Window, IAsyncDisposable
         catch (Exception ex) { await ShowApiErrorAsync($"Unable to {(accept ? "accept" : "decline")} request", ex.Message); }
     }
 
-    private UIElement BuildResourcesPage()
+    private Grid BuildResourcesPage()
     {
         var root = new Grid { Margin = new Thickness(24), RowSpacing = 10 };
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
@@ -2563,7 +2563,7 @@ public sealed partial class MainWindow : Window, IAsyncDisposable
         catch (Exception ex) { await ShowApiErrorAsync("Unable to open resource", ex.Message); }
     }
 
-    private UIElement BuildSettingsPage()
+    private ScrollViewer BuildSettingsPage()
     {
         var panel = new StackPanel { Spacing = 14, Margin = new Thickness(24), MaxWidth = 760,
             HorizontalAlignment = HorizontalAlignment.Center };
@@ -2624,7 +2624,7 @@ public sealed partial class MainWindow : Window, IAsyncDisposable
         };
     }
 
-    private static UIElement ActivityItem(string course, string title, string meta)
+    private static StackPanel ActivityItem(string course, string title, string meta)
     {
         var stack = new StackPanel { Spacing = 5 };
         stack.Children.Add(Text(course.ToUpperInvariant(), 11, true));
@@ -2633,7 +2633,7 @@ public sealed partial class MainWindow : Window, IAsyncDisposable
         return stack;
     }
 
-    private static UIElement CourseRow(string name)
+    private static Grid CourseRow(string name)
     {
         var grid = new Grid { ColumnSpacing = 12 };
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -2671,7 +2671,7 @@ public sealed partial class MainWindow : Window, IAsyncDisposable
             Reset(BuildApplicationShell(kind, page));
     }
 
-    private IEnumerable<SchoologyEntity> GetSchoolProfileEntities()
+    private SchoologyEntity[] GetSchoolProfileEntities()
     {
         if (_session is null) return Array.Empty<SchoologyEntity>();
         var schoolId = ProfileValue(_session.User, "school_id", "schoolId");
@@ -2680,7 +2680,7 @@ public sealed partial class MainWindow : Window, IAsyncDisposable
         return new[] { new SchoologyEntity(id, schoolName, string.Empty, null, _session.User.Clone()) };
     }
 
-    private UIElement BuildThreePane(string kind, SchoologyEntity? initialEntity = null)
+    private Grid BuildThreePane(string kind, SchoologyEntity? initialEntity = null)
     {
         IEnumerable<SchoologyEntity> entries = kind == "Courses" ? _courses :
             kind == "Groups" ? _groups : GetSchoolProfileEntities();
@@ -2848,7 +2848,7 @@ public sealed partial class MainWindow : Window, IAsyncDisposable
         return root;
     }
 
-    private UIElement BuildEntityUpcomingContent(string kind, long entityId)
+    private Grid BuildEntityUpcomingContent(string kind, long entityId)
     {
         var root = new Grid { RowSpacing = 8 };
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
@@ -2973,7 +2973,7 @@ public sealed partial class MainWindow : Window, IAsyncDisposable
         catch (Exception ex) { await ShowApiErrorAsync("Unable to open course app", ex.Message); }
     }
 
-    private bool AnimationsEnabled =>
+    private static bool AnimationsEnabled =>
         new UISettings().AnimationsEnabled &&
         !string.Equals(ReadAppSetting("ReduceMotion", "false"), "true", StringComparison.OrdinalIgnoreCase);
 
@@ -3012,7 +3012,7 @@ public sealed partial class MainWindow : Window, IAsyncDisposable
         frame.Navigate(typeof(SchoologyShellContentPage), content, animationsEnabled ? transition : null);
     }
 
-    private UIElement BuildEntityTabContent(string kind, long entityId, string entity, string tab,
+    private Grid BuildEntityTabContent(string kind, long entityId, string entity, string tab,
         SchoologyEntity? entityInfo = null, bool showInfobox = true)
     {
         var layout = new Grid { RowSpacing = 8, Margin = new Thickness(8) };
@@ -3202,12 +3202,13 @@ public sealed partial class MainWindow : Window, IAsyncDisposable
             }
             void SetConnectedFrameContent(Frame frame, UIElement nextContent)
             {
-                var animation = AnimationsEnabled && frame.Content is UIElement currentContent
-                    ? ConnectedAnimationService.GetForCurrentView().PrepareToAnimate("AssignmentTabContent", currentContent)
+                // Assignment content may be replaced after an asynchronous request,
+                // leaving the prepared source detached before TryStart executes.
+                // Keep the native WinUI navigation transition without a stale source.
+                frame.ContentTransitions = AnimationsEnabled
+                    ? new TransitionCollection { new NavigationThemeTransition() }
                     : null;
                 frame.Content = nextContent;
-                if (animation is not null)
-                    _root.DispatcherQueue.TryEnqueue(() => animation.TryStart(nextContent));
             }
             void UpdateAssignmentCreateContext(bool isWide, string selectedTab)
             {
@@ -3604,7 +3605,7 @@ public sealed partial class MainWindow : Window, IAsyncDisposable
 
 
 
-    private UIElement BuildMaterialsList(long sectionId, IReadOnlyList<SchoologyApiRecord> initialRecords)
+    private StackPanel BuildMaterialsList(long sectionId, IReadOnlyList<SchoologyApiRecord> initialRecords)
     {
         var panel = new StackPanel { Spacing = 8 };
         var breadcrumb = Text("Materials", 13, true);
@@ -3762,7 +3763,7 @@ public sealed partial class MainWindow : Window, IAsyncDisposable
         return panel;
     }
 
-    private UIElement BuildMembersList(IReadOnlyList<SchoologyApiRecord> records, string kind)
+    private StackPanel BuildMembersList(IReadOnlyList<SchoologyApiRecord> records, string kind)
     {
         var people = records.Select(record =>
         {
@@ -3913,9 +3914,21 @@ public sealed partial class MainWindow : Window, IAsyncDisposable
             if (_session is null || userId <= 0) return;
             using var user = await _api.GetUserAsync(_session, userId);
             var data = user.RootElement.TryGetProperty("user", out var nested) ? nested : user.RootElement;
-            var picture = ProfileValue(data, "picture_url", "pictureUrl", "picture", "photo_url");
-            if (!string.IsNullOrWhiteSpace(picture))
-                image.Source = new BitmapImage(new Uri(NormalizeSchoologyImageUrl(picture)));
+            var picture = ProfileValue(data, "picture_url", "pictureUrl", "picture", "photo_url", "avatar_url");
+            if (string.IsNullOrWhiteSpace(picture)) return;
+            var bytes = await _auth.GetSchoologyFileBytesAsync(_session, NormalizeSchoologyImageUrl(picture));
+            using var stream = new InMemoryRandomAccessStream();
+            using (var writer = new DataWriter(stream.GetOutputStreamAt(0)))
+            {
+                writer.WriteBytes(bytes);
+                await writer.StoreAsync();
+                await writer.FlushAsync();
+                writer.DetachStream();
+            }
+            stream.Seek(0);
+            var bitmap = new BitmapImage();
+            await bitmap.SetSourceAsync(stream);
+            image.Source = bitmap;
         }
         catch { }
     }
@@ -4609,7 +4622,7 @@ public sealed partial class MainWindow : Window, IAsyncDisposable
         return false;
     }
 
-    private UIElement BuildMessagesPage()
+    private Grid BuildMessagesPage()
     {
         var root = new Grid { Margin = new Thickness(18), ColumnSpacing = 12 };
         root.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(360) });
@@ -5031,7 +5044,7 @@ public sealed partial class MainWindow : Window, IAsyncDisposable
         return System.Text.RegularExpressions.Regex.Replace(text, "\\s+", " ").Trim();
     }
 
-    private TreeView BuildGradeDetails(JsonElement section, bool expandPeriods)
+    private static TreeView BuildGradeDetails(JsonElement section, bool expandPeriods)
     {
         var tree = new TreeView { HorizontalAlignment = HorizontalAlignment.Stretch };
         AutomationProperties.SetAutomationId(tree, "SchoologyCourseGradesTree");
@@ -5104,7 +5117,7 @@ public sealed partial class MainWindow : Window, IAsyncDisposable
         }
     }
 
-    private UIElement BuildGradesPage()
+    private Grid BuildGradesPage()
     {
         var root = new Grid { Margin = new Thickness(24), RowSpacing = 10 };
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
@@ -5313,7 +5326,7 @@ public sealed partial class MainWindow : Window, IAsyncDisposable
             await ShowApiErrorAsync("Unable to open Schoology web content", ex.Message);
         }
     }
-    private UIElement BuildProfilePage()
+    private StackPanel BuildProfilePage()
     {
         var panel = new StackPanel { Spacing = 12, Margin = new Thickness(24) };
         panel.Children.Add(Text("My Profile", 24, true));
