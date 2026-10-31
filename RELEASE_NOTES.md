@@ -1,3 +1,7 @@
+## [2026.10.0-port.18]
+
+- Fix WinUI 3 WebView2 environment initialization by using the supported `CreateWithOptionsAsync` API while retaining the persistent shared WebView data folder.
+
 ## [2026.10.0-port.17]
 
 - Replace the course dashboard list with a responsive, virtualized WinUI GridView of Tauri-style course cards.

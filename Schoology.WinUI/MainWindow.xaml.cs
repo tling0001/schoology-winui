@@ -4136,7 +4136,7 @@ public sealed partial class MainWindow : Window
         var webViewDataFolder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "Schoology", "WebView2");
         Directory.CreateDirectory(webViewDataFolder);
-        _sharedWebViewEnvironment ??= await CoreWebView2Environment.CreateAsync(null, webViewDataFolder, null);
+        _sharedWebViewEnvironment ??= await CoreWebView2Environment.CreateWithOptionsAsync(null, webViewDataFolder, new CoreWebView2EnvironmentOptions());
         await _sharedWebView.EnsureCoreWebView2Async(_sharedWebViewEnvironment);
         UpdateSharedWebViewTheme();
         _sharedWebView.CoreWebView2.Settings.AreDevToolsEnabled = false;
