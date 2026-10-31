@@ -1,3 +1,13 @@
+## [2026.10.0-port.19]
+
+- Reduce Windows installer size by downloading the Windows App SDK runtime prerequisite during setup instead of embedding its installer inside every Schoology installer.
+- Fix message detail retrieval to use the official inbox/sent thread endpoints and request message attachments.
+- Scope course, group, and school-profile Upcoming panes to that selected entity.
+- Add a native course Assignments list and native assignment detail surface, preserving LTI assignments as embedded web content.
+- Add course applications to the course sidebar and launch them through the v2 course-app endpoint.
+- Remove the standalone School Profile drawer destination while retaining the course-to-school profile link.
+- Improve course infobox school links, remove redundant Course/Group labels in portrait, center Settings, and use the native WinUI ringer icon for Notifications.
+
 ## [2026.10.0-port.18]
 
 - Fix WinUI 3 WebView2 environment initialization by using the supported `CreateWithOptionsAsync` API while retaining the persistent shared WebView data folder.

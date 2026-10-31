@@ -39,13 +39,32 @@ internal sealed class SchoologyApiClient
         SchoologyAuthService.Session session, long sectionId, long folderId, CancellationToken cancellationToken = default) =>
         _auth.GetApiJsonAsync(session, $"courses/{sectionId}/folder/{folderId}", null, cancellationToken);
 
+    internal Task<JsonDocument> GetAssignmentsAsync(
+        SchoologyAuthService.Session session, long sectionId, CancellationToken cancellationToken = default) =>
+        _auth.GetApiJsonAsync(session, $"sections/{sectionId}/assignments",
+            new Dictionary<string, string>
+            {
+                ["start"] = "0", ["limit"] = "100", ["with_attachments"] = "TRUE", ["richtext"] = "1"
+            }, cancellationToken);
+
+    internal Task<JsonDocument> GetCourseAppsAsync(
+        SchoologyAuthService.Session session, long sectionId, CancellationToken cancellationToken = default) =>
+        _auth.GetApiJsonAtVersionAsync(session, "v2", $"sections/{sectionId}/applications", null, cancellationToken);
+
+    internal Task<JsonDocument> LaunchCourseAppAsync(
+        SchoologyAuthService.Session session, long sectionId, long appId, CancellationToken cancellationToken = default) =>
+        _auth.GetApiJsonAtVersionAsync(session, "v2", $"sections/{sectionId}/applications/{appId}/launch", null, cancellationToken);
+
     internal Task<JsonDocument> GetMessagesAsync(
         SchoologyAuthService.Session session, bool sent, CancellationToken cancellationToken = default) =>
         _auth.GetApiJsonAsync(session, sent ? "messages/sent" : "messages/inbox",
             new Dictionary<string, string> { ["limit"] = "50" }, cancellationToken);
 
-    internal Task<JsonDocument> GetMessageAsync(SchoologyAuthService.Session session, long messageId, CancellationToken cancellationToken = default) =>
-        _auth.GetApiJsonAsync(session, $"messages/{messageId}", null, cancellationToken);
+    internal Task<JsonDocument> GetMessageAsync(
+        SchoologyAuthService.Session session, long messageId, bool sent,
+        CancellationToken cancellationToken = default) =>
+        _auth.GetApiJsonAsync(session, $"messages/{(sent ? "sent" : "inbox")}/{messageId}",
+            new Dictionary<string, string> { ["with_attachments"] = "TRUE" }, cancellationToken);
 
     internal async Task<JsonDocument> GetEntityTabAsync(
         SchoologyAuthService.Session session, string kind, long entityId, string tab,
@@ -62,6 +81,7 @@ internal sealed class SchoologyApiClient
             "Members" => "enrollments",
             "Staff" => "users",
             "Discussions" => "discussions",
+            "Assignments" => "assignments",
             "Events" or "Upcoming" => "events",
             "Resources" => "resources",
             "Info" => throw new InvalidOperationException("School information is not available."),
@@ -71,7 +91,9 @@ internal sealed class SchoologyApiClient
             ? new Dictionary<string, string> { ["start"] = "0", ["limit"] = "200", ["enrollment_status"] = "1" }
             : tab == "Materials"
                 ? new Dictionary<string, string> { ["start"] = "0", ["limit"] = "200", ["with_attachments"] = "TRUE" }
-                : new Dictionary<string, string> { ["limit"] = "100" };
+                : tab == "Assignments"
+                    ? new Dictionary<string, string> { ["start"] = "0", ["limit"] = "100", ["with_attachments"] = "TRUE", ["richtext"] = "1" }
+                    : new Dictionary<string, string> { ["limit"] = "100" };
         return await _auth.GetApiJsonAsync(session, $"{realm}/{entityId}/{resource}", parameters, cancellationToken);
     }
 
@@ -183,7 +205,7 @@ internal sealed class SchoologyApiClient
             var keys = collectionKeys.Length == 0
                 ? new[] { "section", "sections", "group", "groups", "update", "updates", "document", "documents",
                     "grade", "grades", "member", "members", "discussion", "discussions", "event", "events",
-                    "resource", "resources", "message", "messages", "folder", "folders", "user", "users",
+                    "assignment", "assignments", "resource", "resources", "message", "messages", "folder", "folders", "user", "users",
                     "enrollment", "enrollments", "event", "events", "update", "updates" }
                 : collectionKeys;
             foreach (var key in keys)
