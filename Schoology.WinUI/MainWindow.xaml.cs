@@ -2535,7 +2535,7 @@ public sealed partial class MainWindow : Window
         _selectedEntityId = entityId;
         var tabs = kind == "School Profile" ? new[] { "Updates", "Info", "Resources", "Discussions" } :
             kind == "Groups" ? new[] { "Updates", "Members", "Discussions", "Resources" } :
-            new[] { "Materials", "Updates", "Assignments", "Grades", "Members", "Discussions" };
+            new[] { "Materials", "Updates", "Grades", "Members", "Discussions" };
 
         var root = new Grid { Background = new SolidColorBrush(Colors.Transparent) };
         var wide = new Grid { ColumnSpacing = 0 };
@@ -2912,46 +2912,182 @@ public sealed partial class MainWindow : Window
     {
         try
         {
-            if (_session is null) throw new InvalidOperationException("Sign in to view this assignment.");
+            var session = _session ?? throw new InvalidOperationException("Sign in to view this assignment.");
             var assignmentId = JsonLong(record.Data, "id", "assignment_id", "assignmentId");
             if (assignmentId <= 0) throw new InvalidOperationException("Schoology did not return a valid assignment ID.");
-            using var document = await _api.GetAssignmentAsync(_session, sectionId, assignmentId);
+            using var document = await _api.GetAssignmentAsync(session, sectionId, assignmentId);
             var assignment = document.RootElement;
             if (assignment.ValueKind == JsonValueKind.Object && assignment.TryGetProperty("assignment", out var nested))
                 assignment = nested;
 
-            var content = new StackPanel { Spacing = 10, Margin = new Thickness(8) };
+            var title = ProfileValue(assignment, "title", "assignment_title") ?? record.Title;
             var description = ProfileValue(assignment, "description", "body", "description_richtext", "descriptionRichtext");
-            if (!string.IsNullOrWhiteSpace(description)) content.Children.Add(Text(StripMarkup(description), 14));
             var due = ProfileValue(assignment, "due", "due_date", "dueDate");
-            if (!string.IsNullOrWhiteSpace(due)) content.Children.Add(Text("Due " + due, 12));
             var points = ProfileValue(assignment, "max_points", "maxPoints", "points");
-            if (!string.IsNullOrWhiteSpace(points)) content.Children.Add(Text(points + " points", 12));
-            if (string.IsNullOrWhiteSpace(description) && string.IsNullOrWhiteSpace(due) && string.IsNullOrWhiteSpace(points))
-                content.Children.Add(Text("No additional assignment details were provided.", 13));
-
-            var assignmentType = (ProfileValue(assignment, "assignment_type", "assignmentType", "type") ?? string.Empty)
-                .ToLowerInvariant();
+            var allowDropboxValue = ProfileValue(assignment, "allow_dropbox", "allowDropbox");
+            var submissionsEnabled = (assignment.TryGetProperty("allow_dropbox", out var allowDropbox) &&
+                    (allowDropbox.ValueKind == JsonValueKind.True || allowDropbox.ToString() is "1" or "true" or "TRUE")) ||
+                (assignment.TryGetProperty("allowDropbox", out var camelDropbox) &&
+                    (camelDropbox.ValueKind == JsonValueKind.True || camelDropbox.ToString() is "1" or "true" or "TRUE")) ||
+                allowDropboxValue is "1" or "true" or "TRUE";
+            var gradeItemId = JsonLong(assignment, "grade_item_id", "gradeItemId");
+            var assignmentType = (ProfileValue(assignment, "assignment_type", "assignmentType", "type") ?? "").ToLowerInvariant();
             var launchUrl = ProfileValue(assignment, "web_url", "webUrl", "launch_url", "launchUrl", "url", "href", "location");
-            var dialog = new ContentDialog
+            if ((assignmentType is "lti" or "lti_submission") && !string.IsNullOrWhiteSpace(launchUrl))
             {
-                Title = ProfileValue(assignment, "title", "assignment_title") ?? record.Title,
-                Content = new ScrollViewer { Content = content, MaxHeight = 520,
-                    VerticalScrollBarVisibility = ScrollBarVisibility.Auto },
-                CloseButtonText = "Close",
-                XamlRoot = _root.XamlRoot
-            };
-            if (assignmentType == "lti_submission" && !string.IsNullOrWhiteSpace(launchUrl))
-            {
-                dialog.PrimaryButtonText = "Open LTI assignment";
-                dialog.DefaultButton = ContentDialogButton.Primary;
-                if (await dialog.ShowAsync() == ContentDialogResult.Primary)
-                    await OpenSharedWebViewAsync(launchUrl, record.Title, allowLtiExternal: true);
+                await OpenSharedWebViewAsync(launchUrl, title, allowLtiExternal: true,
+                    onBack: () => ReturnFromAssignment(sectionId));
                 return;
             }
-            await dialog.ShowAsync();
+
+            var info = new StackPanel { Spacing = 10, Margin = new Thickness(8) };
+            if (!string.IsNullOrWhiteSpace(description)) info.Children.Add(Text(StripMarkup(description), 14));
+            if (!string.IsNullOrWhiteSpace(due)) AddProfileField(info, "Due date", due);
+            if (!string.IsNullOrWhiteSpace(points)) AddProfileField(info, "Points", points);
+            if (info.Children.Count == 0) info.Children.Add(EmptyState("No additional assignment information was provided."));
+            UIElement infoView = new ScrollViewer { Content = info, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+
+            var comments = new StackPanel { Spacing = 8, Margin = new Thickness(8) };
+            try
+            {
+                using var commentDocument = await _api.GetAssignmentCommentsAsync(session, sectionId, assignmentId);
+                var commentRecords = SchoologyApiClient.ReadRecords(commentDocument.RootElement, "comment", "comments");
+                if (commentRecords.Count == 0) comments.Children.Add(EmptyState("No comments yet."));
+                foreach (var comment in commentRecords)
+                {
+                    var card = new StackPanel { Spacing = 4, Padding = new Thickness(12) };
+                    var author = ProfileValue(comment.Data, "name_display", "display_name", "author_name", "username");
+                    var body = ProfileValue(comment.Data, "comment", "comment_text", "body", "text");
+                    if (!string.IsNullOrWhiteSpace(author)) card.Children.Add(Text(author, 12, true));
+                    if (!string.IsNullOrWhiteSpace(body)) card.Children.Add(Text(StripMarkup(body), 13));
+                    comments.Children.Add(Surface(card));
+                }
+            }
+            catch (Exception ex) { comments.Children.Add(EmptyState("Unable to load assignment comments.", ex.Message)); }
+            UIElement commentsView = new ScrollViewer { Content = comments, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+
+            UIElement? submissionsView = null;
+            if (submissionsEnabled)
+            {
+                var submissions = new StackPanel { Spacing = 8, Margin = new Thickness(8) };
+                submissions.Children.Add(Text("Submissions", 18, true));
+                if (gradeItemId <= 0) submissions.Children.Add(EmptyState("Schoology did not return a grade-item ID."));
+                else
+                {
+                    try
+                    {
+                        using var submissionDocument = await _api.GetAssignmentSubmissionAsync(session, sectionId, gradeItemId, session.UserId);
+                        var submissionRecords = SchoologyApiClient.ReadRecords(submissionDocument.RootElement, "submission", "submissions");
+                        if (submissionRecords.Count == 0) submissions.Children.Add(EmptyState("No submission has been recorded."));
+                        foreach (var submission in submissionRecords)
+                        {
+                            var card = new StackPanel { Spacing = 4, Padding = new Thickness(12) };
+                            foreach (var key in new[] { "status", "created", "body", "filename", "file_name" })
+                            {
+                                var value = ProfileValue(submission.Data, key);
+                                if (!string.IsNullOrWhiteSpace(value)) card.Children.Add(Text(key.Replace('_', ' ') + ": " + StripMarkup(value), 13));
+                            }
+                            submissions.Children.Add(Surface(card));
+                        }
+                    }
+                    catch (Exception ex) { submissions.Children.Add(EmptyState("Unable to load your submission.", ex.Message)); }
+                }
+                submissionsView = new ScrollViewer { Content = submissions, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+            }
+
+            var header = new Grid { ColumnSpacing = 12, Margin = new Thickness(16, 10, 16, 4) };
+            header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            header.Children.Add(Action("‹ Back", (_, _) => ReturnFromAssignment(sectionId)));
+            var heading = Text(title, 21, true);
+            Grid.SetColumn(heading, 1);
+            header.Children.Add(heading);
+
+            var wide = new Grid { RowSpacing = 8, ColumnSpacing = 16, Margin = new Thickness(16, 8, 16, 16) };
+            wide.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            if (submissionsEnabled) wide.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(360) });
+            wide.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            wide.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+            var wideSelector = new SelectorBar();
+            var wideInfo = new SelectorBarItem { Text = "Info" };
+            var wideComments = new SelectorBarItem { Text = "Comments" };
+            wideSelector.Items.Add(wideInfo);
+            wideSelector.Items.Add(wideComments);
+            Grid.SetRow(wideSelector, 0);
+            wide.Children.Add(wideSelector);
+            var wideFrame = new Frame { Background = new SolidColorBrush(Colors.Transparent) };
+            Grid.SetRow(wideFrame, 1);
+            wide.Children.Add(wideFrame);
+            if (submissionsEnabled && submissionsView is not null)
+            {
+                var pane = Surface(submissionsView, new Thickness(10));
+                Grid.SetColumn(pane, 1);
+                Grid.SetRowSpan(pane, 2);
+                wide.Children.Add(pane);
+            }
+            void SelectWide(SelectorBarItem item) => wideFrame.Content = item == wideComments ? commentsView : infoView;
+            wideSelector.SelectionChanged += (_, _) => { if (wideSelector.SelectedItem is SelectorBarItem item) SelectWide(item); };
+            wideSelector.SelectedItem = wideInfo;
+            SelectWide(wideInfo);
+
+            var narrow = new Grid { RowSpacing = 8, Margin = new Thickness(12) };
+            narrow.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            narrow.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+            var narrowSelector = new SelectorBar { HorizontalAlignment = HorizontalAlignment.Stretch };
+            var narrowInfo = new SelectorBarItem { Text = "Info" };
+            var narrowComments = new SelectorBarItem { Text = "Comments" };
+            var narrowSubmissions = new SelectorBarItem { Text = "Submissions" };
+            narrowSelector.Items.Add(narrowInfo);
+            narrowSelector.Items.Add(narrowComments);
+            if (submissionsEnabled) narrowSelector.Items.Add(narrowSubmissions);
+            Grid.SetRow(narrowSelector, 0);
+            narrow.Children.Add(narrowSelector);
+            var narrowFrame = new Frame { Background = new SolidColorBrush(Colors.Transparent) };
+            Grid.SetRow(narrowFrame, 1);
+            narrow.Children.Add(narrowFrame);
+            void SelectNarrow(SelectorBarItem item) =>
+                narrowFrame.Content = item == narrowComments ? commentsView :
+                    item == narrowSubmissions && submissionsEnabled ? submissionsView : infoView;
+            narrowSelector.SelectionChanged += (_, _) => { if (narrowSelector.SelectedItem is SelectorBarItem item) SelectNarrow(item); };
+            narrowSelector.SelectedItem = narrowInfo;
+            SelectNarrow(narrowInfo);
+
+            var page = new Grid();
+            page.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            page.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+            page.Children.Add(header);
+            var responsive = new Grid();
+            responsive.Children.Add(wide);
+            responsive.Children.Add(narrow);
+            void UpdateLayout(double width)
+            {
+                var isWide = width >= 900;
+                wide.Visibility = isWide ? Visibility.Visible : Visibility.Collapsed;
+                narrow.Visibility = isWide ? Visibility.Collapsed : Visibility.Visible;
+            }
+            responsive.SizeChanged += (_, args) => UpdateLayout(args.NewSize.Width);
+            UpdateLayout(_root.ActualWidth);
+            Grid.SetRow(responsive, 1);
+            page.Children.Add(responsive);
+            if (_sectionFrame is not null) NavigateMainSection(page, title);
+            else Reset(BuildApplicationShell(title, page));
         }
         catch (Exception ex) { await ShowApiErrorAsync("Unable to load assignment", ex.Message); }
+    }
+
+    private void ReturnFromAssignment(long sectionId)
+    {
+        if (_page == "Courses")
+        {
+            ShowThreePane("Courses", _courses.FirstOrDefault(course => course.Id == sectionId));
+            return;
+        }
+        if (_page == "Groups")
+        {
+            ShowThreePane("Groups", _groups.FirstOrDefault(group => group.Id == _selectedEntityId));
+            return;
+        }
+        ShowHome(_section == "Upcoming" ? "Upcoming" : "Recent Activity");
     }
 
     private async Task LoadEntityTabAsync(string kind, long entityId, string tab, StackPanel body, TextBlock status)
@@ -3164,9 +3300,7 @@ public sealed partial class MainWindow : Window
                         () => ShowThreePane("Courses", _courses.FirstOrDefault(course => course.Id == sectionId)));
                     return;
                 }
-                await OpenSharedWebViewAsync($"https://app.schoology.com/assignment/{materialId}", title,
-                    allowLtiExternal: true,
-                    onBack: () => ShowThreePane("Courses", _courses.FirstOrDefault(course => course.Id == sectionId)));
+                await ShowAssignmentDetailsAsync(sectionId, record);
                 return;
             }
             if (materialType is "assessment" or "assessment_v2" or "managed_assessment" or "quiz" or "test")

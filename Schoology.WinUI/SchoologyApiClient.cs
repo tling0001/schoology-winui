@@ -190,6 +190,20 @@ internal sealed class SchoologyApiClient
         _auth.GetApiJsonAsync(session, $"sections/{sectionId}/assignments/{assignmentId}",
             new Dictionary<string, string> { ["richtext"] = "1", ["with_attachments"] = "TRUE" }, ct);
 
+    internal Task<JsonDocument> GetAssignmentCommentsAsync(
+        SchoologyAuthService.Session session, long sectionId, long assignmentId,
+        CancellationToken ct = default) =>
+        _auth.GetApiJsonAsync(session, $"sections/{sectionId}/assignments/{assignmentId}/comments",
+            new Dictionary<string, string>
+            {
+                ["start"] = "0", ["limit"] = "100", ["with_attachments"] = "TRUE", ["richtext"] = "1"
+            }, ct);
+
+    // Official Android uses the section realm, grade-item ID, and current user ID.
+    internal Task<JsonDocument> GetAssignmentSubmissionAsync(
+        SchoologyAuthService.Session session, long sectionId, long gradeItemId, long userId,
+        CancellationToken ct = default) =>
+        _auth.GetApiJsonAsync(session, $"sections/{sectionId}/submissions/{gradeItemId}/{userId}", null, ct);
     internal Task<JsonDocument> GetDocumentAsync(
         SchoologyAuthService.Session session, long sectionId, long documentId, CancellationToken ct = default) =>
         _auth.GetApiJsonAsync(session, $"sections/{sectionId}/documents/{documentId}", null, ct);
@@ -368,7 +382,7 @@ internal sealed partial class SchoologyAuthService
     internal async Task<IReadOnlyList<WebSessionCookie>> GetWebSessionCookiesAsync(Session session, CancellationToken ct = default)
     {
         var defaultDomain = WebHost.EndsWith("schoologyca.com", StringComparison.OrdinalIgnoreCase) ? ".schoologyca.com" : ".schoology.com";
-        var url = $"https://{ApiHost}/v1/sessionstart?for_domain={Uri.EscapeDataString(WebHost)}";
+        var url = $"https://{ApiHost}/v1/sessionstart?domain={Uri.EscapeDataString(WebSessionUrl.TrimEnd((char)47))}";
         using var response = await SendSignedRequestAsync(HttpMethod.Get, url, () => null, session.Token, session.Secret, null, ct);
         var body = await response.Content.ReadAsStringAsync(ct);
         if (!response.IsSuccessStatusCode)
