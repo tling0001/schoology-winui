@@ -230,6 +230,20 @@ internal sealed class SchoologyApiClient
     internal Task<JsonDocument> GetEventCommentsAsync(SchoologyAuthService.Session session, string kind, long entityId, long id, CancellationToken ct = default) =>
         _auth.GetApiJsonAsync(session, $"{EntityRealm(kind)}/{entityId}/events/{id}/comments",
             new Dictionary<string, string> { ["start"] = "0", ["limit"] = "50", ["with_attachments"] = "TRUE", ["richtext"] = "1" }, ct);
+    internal Task<JsonDocument> AddContentCommentAsync(
+        SchoologyAuthService.Session session, string kind, long entityId, long itemId, bool isEvent,
+        string comment, long parentCommentId, CancellationToken ct = default)
+    {
+        var collection = isEvent ? "events" : "discussions";
+        return _auth.SendApiJsonAsync(session, HttpMethod.Post,
+            $"{EntityRealm(kind)}/{entityId}/{collection}/{itemId}/comments",
+            new Dictionary<string, string>
+            {
+                ["comment"] = comment,
+                ["parent_id"] = parentCommentId.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            }, ct);
+    }
+
     internal Task<JsonDocument> CreateDiscussionAsync(SchoologyAuthService.Session session, string kind, long entityId, string title, string body, CancellationToken ct = default) =>
         _auth.SendApiFormAsync(session, HttpMethod.Post, $"{EntityRealm(kind)}/{entityId}/discussions",
             new Dictionary<string, string> { ["title"] = title, ["body"] = body, ["published"] = "1" }, ct);

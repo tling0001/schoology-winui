@@ -1,3 +1,11 @@
+# Release notes
+
+## 2026.10.0-port.26
+
+- Fix WinUI 3 SplitButton primary-action event subscriptions so the x64 and ARM64 builds compile.
+- Add the shared discussion/event comments ListView with an inline comment composer, threaded replies, profile-aware comment rows, and refresh after posting.
+- Use the same discussion and event comment endpoints and parent-comment payload behavior as classic Tauri port.28.
+
 ## [2026.10.0-port.25] - 2026-10-31
 
 - Fix the connected-animation compile error without removing the transition.

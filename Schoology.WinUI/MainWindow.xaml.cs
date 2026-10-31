@@ -3316,11 +3316,109 @@ public sealed partial class MainWindow : Window
             }
             UIElement BuildComments()
             {
-                var panel = new StackPanel { Spacing = 8, Margin = new Thickness(8) };
-                if (commentsError is not null) panel.Children.Add(EmptyState("Unable to load comments.", commentsError));
-                else if (comments.Count == 0) panel.Children.Add(EmptyState("No comments yet."));
-                else foreach (var comment in comments) panel.Children.Add(BuildCommentRow(comment, itemId));
-                return new ScrollViewer { Content = panel, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+                var layout = new Grid { RowSpacing = 8, Margin = new Thickness(8) };
+                layout.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+                layout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+                var commentList = new ListView
+                {
+                    SelectionMode = ListViewSelectionMode.None,
+                    IsItemClickEnabled = false,
+                    HorizontalContentAlignment = HorizontalAlignment.Stretch
+                };
+                long replyParentId = 0;
+                var replyHint = Text("", 12);
+                replyHint.Foreground = ThemeBrush("SchoologyMutedTextBrush");
+                replyHint.Visibility = Visibility.Collapsed;
+                var commentInput = new TextBox
+                {
+                    PlaceholderText = "Write a comment…",
+                    AcceptsReturn = true,
+                    TextWrapping = TextWrapping.Wrap,
+                    MinHeight = 64,
+                    MaxHeight = 120
+                };
+                AutomationProperties.SetAutomationId(commentInput, $"ContentCommentComposer_{itemId}");
+                Button cancelReply = null!;
+                cancelReply = Action("Cancel reply", (_, _) =>
+                {
+                    replyParentId = 0;
+                    replyHint.Visibility = Visibility.Collapsed;
+                    cancelReply.Visibility = Visibility.Collapsed;
+                    commentInput.PlaceholderText = "Write a comment…";
+                });
+                cancelReply.Visibility = Visibility.Collapsed;
+                Button postButton = null!;
+                postButton = Action("Post comment", async (_, _) =>
+                {
+                    var value = commentInput.Text.Trim();
+                    if (value.Length == 0 || _session is null) return;
+                    postButton.IsEnabled = false;
+                    try
+                    {
+                        using var posted = await _api.AddContentCommentAsync(_session, kind, entityId, itemId, isEvent, value, replyParentId);
+                        commentInput.Text = string.Empty;
+                        replyParentId = 0;
+                        replyHint.Visibility = Visibility.Collapsed;
+                        cancelReply.Visibility = Visibility.Collapsed;
+                        commentInput.PlaceholderText = "Write a comment…";
+                        using var refreshed = isEvent
+                            ? await _api.GetEventCommentsAsync(_session, kind, entityId, itemId)
+                            : await _api.GetDiscussionCommentsAsync(_session, kind, entityId, itemId);
+                        comments = SchoologyApiClient.ReadRecords(refreshed.RootElement, "comment", "comments");
+                        await ResolveCommentAuthorsAsync(comments, _session);
+                        commentsError = null;
+                        RenderComments();
+                    }
+                    catch (Exception ex) { await ShowApiErrorAsync("Unable to post comment", ex.Message); }
+                    finally { postButton.IsEnabled = true; }
+                }, primary: true);
+                void RenderComments()
+                {
+                    commentList.Items.Clear();
+                    if (commentsError is not null)
+                    {
+                        commentList.Items.Add(new ListViewItem { Content = EmptyState("Unable to load comments.", commentsError) });
+                        return;
+                    }
+                    if (comments.Count == 0)
+                    {
+                        commentList.Items.Add(new ListViewItem { Content = EmptyState("No comments yet.") });
+                        return;
+                    }
+                    foreach (var comment in comments)
+                    {
+                        commentList.Items.Add(new ListViewItem
+                        {
+                            Content = BuildCommentRow(comment, itemId, (parentId, author) =>
+                            {
+                                replyParentId = parentId;
+                                replyHint.Text = $"Replying to {author}";
+                                replyHint.Visibility = Visibility.Visible;
+                                cancelReply.Visibility = Visibility.Visible;
+                                commentInput.PlaceholderText = "Write a reply…";
+                                commentInput.Focus(FocusState.Programmatic);
+                            })
+                        });
+                    }
+                }
+                var composerContent = new StackPanel { Spacing = 6 };
+                var replyRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
+                replyRow.Children.Add(replyHint);
+                replyRow.Children.Add(cancelReply);
+                composerContent.Children.Add(replyRow);
+                composerContent.Children.Add(commentInput);
+                composerContent.Children.Add(postButton);
+                var composer = new Border
+                {
+                    Padding = new Thickness(8),
+                    Background = ThemeBrush("SchoologySubtleBrush"),
+                    Child = composerContent
+                };
+                Grid.SetRow(composer, 1);
+                layout.Children.Add(commentList);
+                layout.Children.Add(composer);
+                RenderComments();
+                return layout;
             }
             var header = new Grid { ColumnSpacing = 12, Margin = new Thickness(16, 10, 16, 4) };
             header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -3835,7 +3933,7 @@ public sealed partial class MainWindow : Window
             Background = ThemeBrush("SchoologySubtleBrush"), Clip = null, Child = image };
     }
 
-    private Border BuildCommentRow(SchoologyApiRecord comment, long parentEntityId = 0)
+    private Border BuildCommentRow(SchoologyApiRecord comment, long parentEntityId = 0, Action<long, string>? onReply = null)
     {
         var data = comment.Data;
         var user = data.ValueKind == JsonValueKind.Object && data.TryGetProperty("user", out var nested)
@@ -3866,6 +3964,8 @@ public sealed partial class MainWindow : Window
         var commentId = JsonLong(data, "id", "comment_id", "commentId");
         if (parentEntityId > 0 && commentId > 0)
         {
+            if (onReply is not null)
+                details.Children.Add(Action("Reply", (_, _) => onReply(commentId, author)));
             var liked = JsonBoolean(data, "user_like_action", "user_liked", "userLiked", "liked", "is_liked", "isLiked");
             var likes = JsonLong(data, "likes", "like_count", "likeCount");
             var likeSplit = new SplitButton
@@ -3885,7 +3985,7 @@ public sealed partial class MainWindow : Window
             countItem.Click += async (_, _) => await ShowCommentLikesDialogAsync(parentEntityId, commentId);
             likeMenu.Items.Add(countItem);
             likeSplit.Flyout = likeMenu;
-            likeSplit.PrimaryButtonClick += async (_, _) =>
+            likeSplit.Click += async (_, _) =>
             {
                 if (_session is null) return;
                 likeSplit.IsEnabled = false;
@@ -4169,7 +4269,7 @@ public sealed partial class MainWindow : Window
         var commentCountItem = new MenuFlyoutItem { Text = commentCount > 0 ? $"View {commentCount} comments" : "No comments yet", IsEnabled = commentCount > 0 };
         commentCountItem.Click += async (_, _) => await ShowUpdateCommentsDialogAsync(commentRealm, commentRealmId, updateId);
         commentMenu.Items.Add(commentCountItem); commentSplit.Flyout = commentMenu;
-        commentSplit.PrimaryButtonClick += async (_, _) =>
+        commentSplit.Click += async (_, _) =>
         {
             if (updateId <= 0 || commentRealmId <= 0 || _session is null) return;
             await ShowUpdateCommentComposerAsync(commentRealm, commentRealmId, updateId, () =>
@@ -4185,7 +4285,7 @@ public sealed partial class MainWindow : Window
         var likeCountItem = new MenuFlyoutItem { Text = likeCount > 0 ? $"View {likeCount} likes" : "No likes yet", IsEnabled = likeCount > 0 };
         likeCountItem.Click += async (_, _) => await ShowUpdateLikesDialogAsync(updateId);
         likeMenu.Items.Add(likeCountItem); likeSplit.Flyout = likeMenu;
-        likeSplit.PrimaryButtonClick += async (_, _) =>
+        likeSplit.Click += async (_, _) =>
         {
             if (updateId <= 0 || _session is null) return;
             likeSplit.IsEnabled = false;
