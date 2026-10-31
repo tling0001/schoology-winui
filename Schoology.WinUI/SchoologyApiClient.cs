@@ -60,6 +60,21 @@ internal sealed class SchoologyApiClient
         _auth.GetApiJsonAsync(session, sent ? "messages/sent" : "messages/inbox",
             new Dictionary<string, string> { ["limit"] = "50" }, cancellationToken);
 
+    internal Task<JsonDocument> CreateUpdateAsync(
+        SchoologyAuthService.Session session, string kind, long entityId, string body,
+        CancellationToken cancellationToken = default)
+    {
+        var realm = kind switch
+        {
+            "Courses" => "sections",
+            "Groups" => "groups",
+            _ => throw new InvalidOperationException("Updates can only be posted to a course or group.")
+        };
+        if (entityId <= 0) throw new InvalidOperationException("Choose a valid Schoology destination.");
+        return _auth.SendApiFormAsync(session, HttpMethod.Post, $"{realm}/{entityId}/updates",
+            new Dictionary<string, string> { ["body"] = body }, cancellationToken);
+    }
+
     internal Task<JsonDocument> GetMessageAsync(
         SchoologyAuthService.Session session, long messageId, bool sent,
         CancellationToken cancellationToken = default) =>
@@ -386,7 +401,8 @@ internal sealed partial class SchoologyAuthService
     internal async Task<IReadOnlyList<WebSessionCookie>> GetWebSessionCookiesAsync(Session session, CancellationToken ct = default)
     {
         var defaultDomain = WebHost.EndsWith("schoologyca.com", StringComparison.OrdinalIgnoreCase) ? ".schoologyca.com" : ".schoology.com";
-        var url = $"https://{ApiHost}/v1/sessionstart?domain={Uri.EscapeDataString(WebSessionUrl.TrimEnd((char)47))}";
+        // Android CSOAssignment.startSession(domain) sends the bare app host (for example app.schoology.com), not a URL with a scheme.
+        var url = $"https://{ApiHost}/v1/sessionstart?domain={Uri.EscapeDataString(WebHost)}";
         using var response = await SendSignedRequestAsync(HttpMethod.Get, url, () => null, session.Token, session.Secret, null, ct);
         var body = await ReadResponseTextAsync(response.Content, ct);
         if (!response.IsSuccessStatusCode)

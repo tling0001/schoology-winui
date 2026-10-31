@@ -1,3 +1,13 @@
+## [2026.10.0-port.23] - 2026-10-31
+
+- Fixed shared WebView session preparation by sending the official bare Schoology app-domain value to the session-start endpoint.
+- Replaced the custom drawer toggle with the WinUI TitleBar pane-toggle integration and a standard expanded left NavigationView.
+- Fixed assignment detail visual-tree ownership by creating independent Info, Comments, and Submissions views for each responsive layout.
+- Rendered message threads from the API's message collection instead of assuming a single message object.
+- Expanded update attachment parsing for Android's nested files, links, videos, embeds, and thumbnail-backed image attachments; improved poll option wrapper handling.
+- Made the title-bar Create command contextual to Home and course/group Updates, and connected text-only update posting to Schoology's updates endpoint.
+- Kept the course/group/school infobox outside the animated tab content so it remains stationary while tabs change.
+
 ## [2026.10.0-port.22]
 
 - Fix course-material assignment rows so they show only the assignment title, and route assignment IDs using the explicit assignment ID field when present.
