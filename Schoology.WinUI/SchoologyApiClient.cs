@@ -58,7 +58,7 @@ internal sealed class SchoologyApiClient
             "Updates" => "updates",
             "Materials" => "materials_hierarchy",
             "Grades" => "grades",
-            "Members" => kind == "Groups" ? "members" : "enrollments",
+            "Members" => "enrollments",
             "Staff" => "users",
             "Discussions" => "discussions",
             "Events" or "Upcoming" => "events",
@@ -67,9 +67,7 @@ internal sealed class SchoologyApiClient
             _ => throw new InvalidOperationException($"The {tab} view is not supported.")
         };
         var parameters = tab == "Members"
-            ? kind == "Groups"
-                ? new Dictionary<string, string> { ["start"] = "0", ["limit"] = "200" }
-                : new Dictionary<string, string> { ["start"] = "0", ["limit"] = "200", ["enrollment_status"] = "1" }
+            ? new Dictionary<string, string> { ["start"] = "0", ["limit"] = "200", ["enrollment_status"] = "1" }
             : tab == "Materials"
                 ? new Dictionary<string, string> { ["start"] = "0", ["limit"] = "200", ["with_attachments"] = "TRUE" }
                 : new Dictionary<string, string> { ["limit"] = "100" };
@@ -80,7 +78,8 @@ internal sealed class SchoologyApiClient
         SchoologyAuthService.Session session, string kind, long entityId, long updateId,
         CancellationToken cancellationToken = default)
     {
-        var realm = kind == "Groups" ? "groups" : kind == "School Profile" ? "schools" : "sections";
+        var realm = kind == "Groups" ? "groups" : kind == "School Profile" ? "schools" :
+            kind == "Profile" ? "users" : "sections";
         return _auth.GetApiJsonAsync(session, $"{realm}/{entityId}/updates/{updateId}/comments",
             new Dictionary<string, string>
             {
@@ -88,6 +87,11 @@ internal sealed class SchoologyApiClient
                 ["with_attachments"] = "TRUE", ["richtext"] = "1"
             }, cancellationToken);
     }
+
+    internal Task<JsonDocument> GetUpdateLikesAsync(
+        SchoologyAuthService.Session session, long updateId,
+        CancellationToken cancellationToken = default) =>
+        _auth.GetApiJsonAsync(session, $"like/{updateId}", null, cancellationToken);
 
     internal Task<JsonDocument> SetUpdateLikeAsync(
         SchoologyAuthService.Session session, long updateId, bool like,
@@ -99,7 +103,8 @@ internal sealed class SchoologyApiClient
         SchoologyAuthService.Session session, string kind, long entityId, long updateId,
         string comment, CancellationToken cancellationToken = default)
     {
-        var realm = kind == "Groups" ? "groups" : kind == "School Profile" ? "schools" : "sections";
+        var realm = kind == "Groups" ? "groups" : kind == "School Profile" ? "schools" :
+            kind == "Profile" ? "users" : "sections";
         return _auth.SendApiJsonAsync(session, HttpMethod.Post, $"{realm}/{entityId}/updates/{updateId}/comments",
             new Dictionary<string, string> { ["comment"] = comment, ["parent_id"] = "0" }, cancellationToken);
     }

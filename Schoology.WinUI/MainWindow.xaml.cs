@@ -1087,7 +1087,7 @@ public sealed partial class MainWindow : Window
         Grid.SetColumn(drawerToggle, 0);
         titleBar.Children.Insert(0, drawerToggle);
 
-        var animationsEnabled = AnimationsEnabled
+        var animationsEnabled = AnimationsEnabled;
         var initialTransition = new SlideNavigationTransitionInfo { Effect = SlideNavigationTransitionEffect.FromRight };
         var sectionFrame = new Frame
         {
@@ -1213,7 +1213,7 @@ public sealed partial class MainWindow : Window
         if (_sectionFrame is null) return;
         var effect = section is "Home" or "Recent Activity" ? SlideNavigationTransitionEffect.FromLeft : SlideNavigationTransitionEffect.FromRight;
         var info = new SlideNavigationTransitionInfo { Effect = effect };
-        var animationsEnabled = AnimationsEnabled
+        var animationsEnabled = AnimationsEnabled;
         _sectionFrame.ContentTransitions = animationsEnabled
             ? new TransitionCollection { new NavigationThemeTransition { DefaultNavigationTransitionInfo = info } }
             : null;
@@ -1885,12 +1885,18 @@ public sealed partial class MainWindow : Window
             infobox.Children.Add(Text(entityInfo.Subtitle, 12));
         if (kind == "Courses" && entityInfo is not null)
         {
-            var schoolName = ProfileValue(entityInfo.Data, "school_title", "school_name", "school");
+            var schoolName = ProfileValue(entityInfo.Data, "school_title", "school_name", "school") ??
+                (_session is null ? null : ProfileValue(_session.User, "school_title", "school_name", "school"));
             if (!string.IsNullOrWhiteSpace(schoolName))
             {
-                var school = Text(schoolName, 12);
-                school.Foreground = ThemeBrush("SchoologyBlueBrush");
-                infobox.Children.Add(school);
+                if (GetSchoolProfileEntities().Any())
+                    infobox.Children.Add(Action($"School: {schoolName}", (_, _) => ShowThreePane("School Profile")));
+                else
+                {
+                    var school = Text(schoolName, 12);
+                    school.Foreground = ThemeBrush("SchoologyBlueBrush");
+                    infobox.Children.Add(school);
+                }
             }
         }
         if (showInfobox) heading.Children.Add(Surface(infobox, new Thickness(12)));
@@ -2355,70 +2361,107 @@ public sealed partial class MainWindow : Window
         if (kind == "Recent")
         {
             var realm = (ProfileValue(update.Data, "realm", "realm_name", "realmName") ?? "").ToLowerInvariant();
-            commentRealm = realm switch { "group" or "groups" => "Groups", "school" or "schools" => "School Profile", _ => "Courses" };
-            commentRealmId = JsonLong(update.Data, "realm_id", "realmId", "section_id", "sectionId", "group_id", "groupId");
-        }
-        var commentsPanel = new StackPanel { Spacing = 8, Visibility = Visibility.Collapsed };
-        var commentStatus = Text("Comments have not been loaded.", 12);
-        var commentList = new StackPanel { Spacing = 6 };
-        var commentsLoaded = false;
-        var commentInput = new TextBox { PlaceholderText = "Write a comment…", AcceptsReturn = true,
-            TextWrapping = TextWrapping.Wrap, MinHeight = 64 };
-        AutomationProperties.SetAutomationId(commentInput, $"UpdateCommentInput_{updateId}");
-        var composer = new StackPanel { Spacing = 6 };
-        Button send = null!;
-        send = Action("Post comment", async (_, _) =>
-        {
-            var value = commentInput.Text.Trim();
-            if (updateId <= 0 || _session is null || value.Length == 0) return;
-            send.IsEnabled = false;
-            try
+            commentRealm = realm switch
             {
-                using var posted = await _api.AddUpdateCommentAsync(_session, kind, entityId, updateId, value);
-                commentInput.Text = string.Empty;
-                commentsLoaded = false;
-                await LoadUpdateCommentsAsync(kind, entityId, updateId, commentsPanel, commentStatus, commentList);
-                commentsLoaded = true;
-            }
-            catch (Exception ex) { await ShowApiErrorAsync("Unable to post comment", ex.Message); }
-            finally { send.IsEnabled = true; }
-        });
-        AutomationProperties.SetAutomationId(send, $"UpdateCommentSend_{updateId}");
-        composer.Children.Add(commentInput); composer.Children.Add(send);
-        commentsPanel.Children.Add(commentStatus); commentsPanel.Children.Add(commentList); commentsPanel.Children.Add(composer);
+                "group" or "groups" => "Groups",
+                "school" or "schools" => "School Profile",
+                "user" or "users" => "Profile",
+                _ => "Courses"
+            };
+            commentRealmId = JsonLong(update.Data, "realm_id", "realmId", "section_id", "sectionId",
+                "group_id", "groupId", "school_id", "schoolId", "user_id", "uid");
+        }
 
-        var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-        var liked = JsonBoolean(update.Data, "user_liked", "liked", "user_like_action");
-        var likeCount = JsonLong(update.Data, "like_count", "likes_count", "likes");
+        var commentCount = JsonLong(update.Data, "num_comments", "comment_count", "comments_count", "commentCount");
+        var likeCount = JsonLong(update.Data, "likes", "like_count", "likes_count", "likeCount");
+        var liked = JsonBoolean(update.Data, "user_like_action", "user_liked", "userLiked", "liked", "is_liked");
+        var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
+
+        Button commentCountButton = null!;
+        Button likeCountButton = null!;
+        StackPanel previewPanel = new() { Spacing = 6, Visibility = Visibility.Collapsed };
+        Button viewMoreButton = null!;
+
+        var commentButton = Action("Comment", async (_, _) =>
+        {
+            if (updateId <= 0 || commentRealmId <= 0 || _session is null) return;
+            await ShowUpdateCommentComposerAsync(commentRealm, commentRealmId, updateId, () =>
+            {
+                commentCount++;
+                commentCountButton.Content = commentCount.ToString(System.Globalization.CultureInfo.CurrentCulture);
+                commentCountButton.Visibility = Visibility.Visible;
+                if (commentCountButton.Tag is Border divider) divider.Visibility = Visibility.Visible;
+                _ = LoadRecentPostCommentsAsync(commentRealm, commentRealmId, updateId, previewPanel, viewMoreButton);
+            });
+        });
+        AutomationProperties.SetAutomationId(commentButton, $"UpdateComment_{updateId}");
+
+        commentCountButton = Action(commentCount.ToString(System.Globalization.CultureInfo.CurrentCulture),
+            async (_, _) => await ShowUpdateCommentsDialogAsync(commentRealm, commentRealmId, updateId, () =>
+            {
+                commentCount++;
+                commentCountButton.Content = commentCount.ToString(System.Globalization.CultureInfo.CurrentCulture);
+                commentCountButton.Visibility = Visibility.Visible;
+                AutomationProperties.SetName(commentCountButton, $"{commentCount} comments");
+                if (commentCountButton.Tag is Border divider) divider.Visibility = Visibility.Visible;
+                _ = LoadRecentPostCommentsAsync(commentRealm, commentRealmId, updateId, previewPanel, viewMoreButton);
+            }));
+        commentCountButton.Visibility = commentCount > 0 ? Visibility.Visible : Visibility.Collapsed;
+        AutomationProperties.SetName(commentCountButton, $"{commentCount} comments");
+        AutomationProperties.SetAutomationId(commentCountButton, $"UpdateCommentCount_{updateId}");
+        if (commentRealmId <= 0 || updateId <= 0)
+        {
+            commentButton.IsEnabled = false;
+            commentCountButton.IsEnabled = false;
+        }
+
         Button likeButton = null!;
-        likeButton = Action(liked ? $"Unlike ({likeCount})" : $"Like ({likeCount})", async (_, _) =>
+        likeButton = Action(liked ? "Unlike" : "Like", async (_, _) =>
         {
             if (updateId <= 0 || _session is null) return;
             likeButton.IsEnabled = false;
             try
             {
                 using var result = await _api.SetUpdateLikeAsync(_session, updateId, !liked);
-                liked = !liked; likeCount = Math.Max(0, likeCount + (liked ? 1 : -1));
-                likeButton.Content = liked ? $"Unlike ({likeCount})" : $"Like ({likeCount})";
+                liked = !liked;
+                likeCount = Math.Max(0, likeCount + (liked ? 1 : -1));
+                likeButton.Content = liked ? "Unlike" : "Like";
+                likeCountButton.Content = likeCount.ToString(System.Globalization.CultureInfo.CurrentCulture);
+                likeCountButton.Visibility = likeCount > 0 ? Visibility.Visible : Visibility.Collapsed;
+                if (likeCountButton.Tag is Border divider) divider.Visibility = likeCountButton.Visibility;
+                AutomationProperties.SetName(likeCountButton, $"{likeCount} likes");
             }
             catch (Exception ex) { await ShowApiErrorAsync("Unable to update like", ex.Message); }
             finally { likeButton.IsEnabled = true; }
         });
         AutomationProperties.SetAutomationId(likeButton, $"UpdateLike_{updateId}");
-        var commentsButton = Action("Comments", async (_, _) =>
-        {
-            commentsPanel.Visibility = commentsPanel.Visibility == Visibility.Visible
-                ? Visibility.Collapsed : Visibility.Visible;
-            if (commentsPanel.Visibility == Visibility.Visible && !commentsLoaded)
+
+        likeCountButton = Action(likeCount.ToString(System.Globalization.CultureInfo.CurrentCulture),
+            async (_, _) => await ShowUpdateLikesDialogAsync(updateId));
+        likeCountButton.Visibility = likeCount > 0 ? Visibility.Visible : Visibility.Collapsed;
+        AutomationProperties.SetName(likeCountButton, $"{likeCount} likes");
+        AutomationProperties.SetAutomationId(likeCountButton, $"UpdateLikeCount_{updateId}");
+
+        actions.Children.Add(ConnectedButtons(commentButton, commentCountButton));
+        actions.Children.Add(ConnectedButtons(likeButton, likeCountButton));
+        card.Children.Add(actions);
+
+        viewMoreButton = Action("View more comments", async (_, _) =>
+            await ShowUpdateCommentsDialogAsync(commentRealm, commentRealmId, updateId, () =>
             {
-                await LoadUpdateCommentsAsync(kind, entityId, updateId, commentsPanel, commentStatus, commentList);
-                commentsLoaded = true;
-            }
-        });
-        AutomationProperties.SetAutomationId(commentsButton, $"UpdateComments_{updateId}");
-        if (commentRealmId <= 0) commentsButton.IsEnabled = false;
-        actions.Children.Add(likeButton); actions.Children.Add(commentsButton);
-        card.Children.Add(actions); card.Children.Add(commentsPanel);
+                commentCount++;
+                commentCountButton.Content = commentCount.ToString(System.Globalization.CultureInfo.CurrentCulture);
+                commentCountButton.Visibility = Visibility.Visible;
+                AutomationProperties.SetName(commentCountButton, $"{commentCount} comments");
+                if (commentCountButton.Tag is Border divider) divider.Visibility = Visibility.Visible;
+                _ = LoadRecentPostCommentsAsync(commentRealm, commentRealmId, updateId, previewPanel, viewMoreButton);
+            }));
+        viewMoreButton.HorizontalAlignment = HorizontalAlignment.Left;
+        viewMoreButton.Width = double.NaN;
+        card.Children.Add(previewPanel);
+        if (commentCount > 0 && commentRealmId > 0 && updateId > 0)
+            _ = LoadRecentPostCommentsAsync(commentRealm, commentRealmId, updateId, previewPanel, viewMoreButton);
+
         return Surface(card);
     }
 
@@ -2454,6 +2497,216 @@ public sealed partial class MainWindow : Window
                 await LoadUpdateCommentsAsync(kind, entityId, updateId, panel, status, list));
             panel.Children.Insert(Math.Max(0, panel.Children.IndexOf(status) + 1), retry);
         }
+    }
+
+    private Border ConnectedButtons(Button primary, Button count)
+    {
+        primary.Background = new SolidColorBrush(Colors.Transparent);
+        primary.BorderThickness = new Thickness(0);
+        primary.Padding = new Thickness(12, 8, 12, 8);
+        count.Background = new SolidColorBrush(Colors.Transparent);
+        count.BorderThickness = new Thickness(0);
+        count.Padding = new Thickness(10, 8, 12, 8);
+
+        var group = new Grid { ColumnSpacing = 0 };
+        group.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        group.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        group.Children.Add(primary);
+        var divider = new Border { Width = 1, Background = ThemeBrush("SchoologyDividerBrush"),
+            VerticalAlignment = VerticalAlignment.Stretch, Margin = new Thickness(0, 6, 0, 6),
+            Visibility = count.Visibility };
+        Grid.SetColumn(divider, 1);
+        group.Children.Add(divider);
+        count.Tag = divider;
+        Grid.SetColumn(count, 1);
+        group.Children.Add(count);
+        return new Border
+        {
+            BorderBrush = ThemeBrush("SchoologyDividerBrush"),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(8),
+            Background = ThemeBrush("SchoologySubtleBrush"),
+            Child = group
+        };
+    }
+
+    private async Task LoadRecentPostCommentsAsync(
+        string kind, long entityId, long updateId, StackPanel preview, Button viewMore)
+    {
+        try
+        {
+            if (_session is null || entityId <= 0 || updateId <= 0)
+            {
+                preview.Visibility = Visibility.Collapsed;
+                return;
+            }
+
+            using var document = await _api.GetUpdateCommentsAsync(_session, kind, entityId, updateId);
+            var comments = SchoologyApiClient.ReadRecords(document.RootElement, "comment", "comments");
+            preview.Children.Clear();
+            if (comments.Count == 0)
+            {
+                preview.Visibility = Visibility.Collapsed;
+                return;
+            }
+
+            foreach (var comment in comments.TakeLast(2))
+            {
+                var row = new StackPanel { Spacing = 3, Margin = new Thickness(10, 7, 10, 7) };
+                var author = ProfileValue(comment.Data, "user_name", "author_name", "name_display", "display_name") ??
+                    comment.Title;
+                row.Children.Add(Text(author, 12, true));
+                var body = StripMarkup(ProfileValue(comment.Data, "comment", "body", "text", "message") ?? comment.Subtitle);
+                if (!string.IsNullOrWhiteSpace(body)) row.Children.Add(Text(body, 12));
+                preview.Children.Add(Surface(row, new Thickness(0)));
+            }
+
+            if (comments.Count > 2)
+            {
+                viewMore.Content = $"View more comments ({comments.Count})";
+                preview.Children.Add(viewMore);
+            }
+            preview.Visibility = Visibility.Visible;
+        }
+        catch
+        {
+            // Keep the post usable if preview loading fails; the full comments
+            // dialog still provides a retryable, explicit interaction.
+            preview.Visibility = Visibility.Collapsed;
+        }
+    }
+
+    private async Task ShowUpdateCommentComposerAsync(
+        string kind, long entityId, long updateId, Action? onPosted = null)
+    {
+        if (_session is null || entityId <= 0 || updateId <= 0) return;
+        var input = new TextBox
+        {
+            PlaceholderText = "Write a comment…",
+            AcceptsReturn = true,
+            TextWrapping = TextWrapping.Wrap,
+            MinHeight = 100
+        };
+        AutomationProperties.SetAutomationId(input, $"UpdateCommentComposer_{updateId}");
+        var content = new StackPanel { Spacing = 10 };
+        content.Children.Add(Text("Add a comment to this post.", 13));
+        content.Children.Add(input);
+        var dialog = new ContentDialog
+        {
+            Title = "Add comment",
+            Content = content,
+            CloseButtonText = "Cancel",
+            XamlRoot = _root.XamlRoot
+        };
+        Button post = null!;
+        post = Action("Post comment", async (_, _) =>
+        {
+            var value = input.Text.Trim();
+            if (value.Length == 0) return;
+            post.IsEnabled = false;
+            try
+            {
+                using var result = await _api.AddUpdateCommentAsync(_session, kind, entityId, updateId, value);
+                dialog.Hide();
+                onPosted?.Invoke();
+            }
+            catch (Exception ex) { await ShowApiErrorAsync("Unable to post comment", ex.Message); }
+            finally { post.IsEnabled = true; }
+        }, primary: true);
+        content.Children.Add(post);
+        await dialog.ShowAsync();
+    }
+
+    private async Task ShowUpdateCommentsDialogAsync(
+        string kind, long entityId, long updateId, Action? onPosted = null)
+    {
+        if (_session is null || entityId <= 0 || updateId <= 0) return;
+        var content = new StackPanel { Spacing = 8 };
+        content.Children.Add(Text("Loading comments…", 12));
+        var dialog = new ContentDialog
+        {
+            Title = "Comments",
+            Content = new ScrollViewer { Content = content, MaxHeight = 520,
+                VerticalScrollBarVisibility = ScrollBarVisibility.Auto },
+            PrimaryButtonText = "Add comment",
+            CloseButtonText = "Close",
+            DefaultButton = ContentDialogButton.Primary,
+            XamlRoot = _root.XamlRoot
+        };
+        try
+        {
+            using var document = await _api.GetUpdateCommentsAsync(_session, kind, entityId, updateId);
+            var comments = SchoologyApiClient.ReadRecords(document.RootElement, "comment", "comments");
+            content.Children.Clear();
+            if (comments.Count == 0) content.Children.Add(Text("No comments yet.", 13));
+            foreach (var comment in comments)
+            {
+                var row = new StackPanel { Spacing = 4, Margin = new Thickness(10, 8, 10, 8) };
+                var authorId = JsonLong(comment.Data, "uid", "user_id", "userId", "author_id", "authorId");
+                var author = ProfileValue(comment.Data, "user_name", "author_name", "name_display", "display_name");
+                if (authorId > 0)
+                {
+                    try
+                    {
+                        using var userDocument = await _api.GetUserAsync(_session, authorId);
+                        var user = userDocument.RootElement.TryGetProperty("user", out var nestedUser)
+                            ? nestedUser : userDocument.RootElement;
+                        author ??= ProfileValue(user, "name_display", "display_name", "name", "user_name");
+                    }
+                    catch { }
+                }
+                row.Children.Add(Text(author ?? comment.Title, 12, true));
+                var created = ProfileValue(comment.Data, "created", "created_at", "timestamp");
+                if (!string.IsNullOrWhiteSpace(created))
+                {
+                    var date = Text(ParseSchoologyDate(created)?.ToString("g",
+                        System.Globalization.CultureInfo.CurrentCulture) ?? created, 10);
+                    date.Foreground = ThemeBrush("SchoologyMutedTextBrush");
+                    row.Children.Add(date);
+                }
+                var body = StripMarkup(ProfileValue(comment.Data, "comment", "body", "text", "message") ?? comment.Subtitle);
+                if (!string.IsNullOrWhiteSpace(body)) row.Children.Add(Text(body, 13));
+                content.Children.Add(Surface(row));
+            }
+            dialog.Title = comments.Count == 0 ? "Comments" : $"Comments ({comments.Count})";
+        }
+        catch (Exception ex)
+        {
+            content.Children.Clear();
+            content.Children.Add(Text($"Unable to load comments: {ex.Message}", 12));
+        }
+
+        var result = await dialog.ShowAsync();
+        if (result == ContentDialogResult.Primary)
+            await ShowUpdateCommentComposerAsync(kind, entityId, updateId, onPosted);
+    }
+
+    private async Task ShowUpdateLikesDialogAsync(long updateId)
+    {
+        if (_session is null || updateId <= 0) return;
+        try
+        {
+            using var document = await _api.GetUpdateLikesAsync(_session, updateId);
+            var users = SchoologyApiClient.ReadRecords(document.RootElement, "user", "users", "like", "likes");
+            var content = new StackPanel { Spacing = 8 };
+            if (users.Count == 0) content.Children.Add(Text("No likes were returned.", 13));
+            foreach (var person in users)
+            {
+                var name = ProfileValue(person.Data, "name_display", "display_name", "name", "user_name") ??
+                    string.Join(" ", new[] { ProfileValue(person.Data, "name_first"), ProfileValue(person.Data, "name_last") }
+                        .Where(value => !string.IsNullOrWhiteSpace(value)));
+                content.Children.Add(Text(string.IsNullOrWhiteSpace(name) ? person.Title : name, 13));
+            }
+            await new ContentDialog
+            {
+                Title = users.Count == 1 ? "1 like" : $"{users.Count} likes",
+                Content = new ScrollViewer { Content = content, MaxHeight = 480,
+                    VerticalScrollBarVisibility = ScrollBarVisibility.Auto },
+                CloseButtonText = "Close",
+                XamlRoot = _root.XamlRoot
+            }.ShowAsync();
+        }
+        catch (Exception ex) { await ShowApiErrorAsync("Unable to load likes", ex.Message); }
     }
 
     private async Task ShowApiErrorAsync(string title, string message)
