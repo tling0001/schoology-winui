@@ -3257,7 +3257,7 @@ public sealed partial class MainWindow : Window
             list.Items.Clear();
             foreach (var record in records)
             {
-                var type = ProfileValue(record.Data, "type", "document_type", "documentType") ?? "";
+                var materialType = (ProfileValue(record.Data, "type", "resource_type", "document_type", "documentType") ?? "").ToLowerInvariant();
                 var title = ProfileValue(record.Data, "title", "name") ?? record.Title;
                 var row = new Grid { ColumnSpacing = 12, Padding = new Thickness(8, 9, 8, 9) };
                 row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(36) });
