@@ -45,4 +45,10 @@ Name: "{group}\Schoology"; Filename: "{app}\{#AppExeName}"
 Name: "{autodesktop}\Schoology"; Filename: "{app}\{#AppExeName}"; Tasks: desktopicon
 
 [Run]
+Filename: "{app}\WindowsAppRuntimeInstall.exe"; Parameters: "--quiet"; StatusMsg: "Installing Windows App SDK runtime..."; Flags: waituntilterminated
 Filename: "{app}\{#AppExeName}"; Description: "Launch Schoology WinUI"; Flags: postinstall nowait skipifsilent
+
+[UninstallRun]
+Filename: "{sys}\taskkill.exe"; Parameters: "/IM Schoology.WinUI.exe /F"; Flags: runhidden waituntilterminated
+Filename: "{app}\Schoology.WinUI.exe"; Parameters: "--unregister-notifications"; Flags: runhidden waituntilterminated
+Filename: "{sys}\reg.exe"; Parameters: "delete ""HKCU\Software\Microsoft\Windows\CurrentVersion\Run"" /v Schoology /f"; Flags: runhidden waituntilterminated

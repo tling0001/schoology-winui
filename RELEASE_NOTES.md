@@ -1,3 +1,13 @@
+## [2026.10.0-port.17]
+
+- Replace the course dashboard list with a responsive, virtualized WinUI GridView of Tauri-style course cards.
+- Change the drawer Notifications icon to a bell.
+- Embed and use the exact nine Schoology folder PNGs from Tauri port.28, selected from each course material's folder color.
+- Add Windows App Notifications for newly received Schoology activity, with a five-minute background poll, first-run/account-switch baseline, and Tauri-matching optional notification sound.
+- Add a Windows startup entry, hidden background launch, notification-area icon/menu, and single-instance activation so Schoology can remain running after its window is closed.
+- Deploy the matching Windows App SDK runtime alongside the installer because App Notifications require Windows App SDK runtime services that are unavailable in a self-contained Windows App SDK deployment.
+- Fix the reported compact-frame definite-assignment error and initialize WebView2 with an explicit CoreWebView2Environment instead of the unsupported CreationProperties property.
+
 ## [2026.10.0-port.16]
 
 - Add native notifications, requests, and hierarchical resources pages using Schoology API data.

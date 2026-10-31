@@ -1,23 +1,28 @@
+using System.Collections.ObjectModel;
+using System.Diagnostics;
+using System.Runtime.InteropServices;
+using System.Text;
+using System.Text.Json;
+using System.Text.RegularExpressions;
+using System.Web;
+using Windows.Graphics;
+using Windows.Media.Playback;
+using Windows.Storage.Streams;
+using Windows.System;
+using Windows.UI.ViewManagement;
 using Microsoft.UI;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
-using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Automation;
+using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
-using Microsoft.UI.Xaml.Navigation;
 using Microsoft.UI.Xaml.Media.Animation;
-using System.Web;
-using System.Text;
-using System.Text.Json;
-using System.Collections.ObjectModel;
-using Windows.Media.Playback;
-using System.Runtime.InteropServices;
-using Windows.Graphics;
-using Windows.Storage.Streams;
 using Microsoft.UI.Xaml.Media.Imaging;
+using Microsoft.UI.Xaml.Navigation;
 using Microsoft.Web.WebView2.Core;
-using Windows.UI.ViewManagement;
-using Windows.System;
+using Microsoft.Win32;
+using Microsoft.Windows.AppNotifications;
+using Microsoft.Windows.AppNotifications.Builder;
 
 namespace Schoology.WinUI;
 
@@ -38,7 +43,23 @@ public sealed partial class MainWindow : Window
     private readonly ObservableCollection<SchoologyEntity> _groups = new();
     private readonly Dictionary<long, JsonElement> _userProfileCache = new();
     private WebView2? _sharedWebView;
+    private CoreWebView2Environment? _sharedWebViewEnvironment;
     private bool _sharedWebViewInitialized;
+    private DispatcherTimer? _notificationTimer;
+    private bool _notificationPollInProgress;
+    private bool _allowExit;
+    private bool _isBackgroundHidden;
+    private bool _releaseNotesPending;
+    private bool _trayIconAdded;
+    private IntPtr _previousWindowProc;
+    private WindowProc? _windowProcDelegate;
+    private const uint WmClose = 0x0010;
+    private const uint WmEndSession = 0x0016;
+    private const uint WmTrayCallback = 0x8000 + 41;
+    private const uint WmActivateExisting = 0x8000 + 42;
+    private const int GwlWndProc = -4;
+    private const uint WmLButtonDoubleClick = 0x0203;
+    private const uint WmRButtonUp = 0x0205;
     private bool _sharedWebViewAllowLti;
     private long _sharedWebViewSessionUserId;
     private TextBlock? _sharedWebViewStatus;
@@ -48,6 +69,7 @@ public sealed partial class MainWindow : Window
     private static readonly string WindowStatePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Schoology", "window-state.json");
     private static readonly string ReleaseNotesStatePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Schoology", "release-notes-version.txt");
     private static readonly string AppSettingsPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Schoology", "settings.json");
+    private static readonly string NotificationSeenStatePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Schoology", "notification-seen.json");
     private static readonly HttpClient ReleaseNotesClient = new();
     private bool _restoringWindowState;
 
@@ -59,6 +81,15 @@ public sealed partial class MainWindow : Window
 
         _root = Root;
         _api = new SchoologyApiClient(_auth);
+        _windowProcDelegate = HandleWindowMessage;
+        var windowHandle = Win32Interop.GetWindowFromWindowId(AppWindow.Id);
+        _previousWindowProc = SetWindowLongPtr(windowHandle, GwlWndProc, _windowProcDelegate);
+        ConfigureStartupRegistration();
+        Closed += (_, _) =>
+        {
+            DestroyTrayIcon();
+            try { AppNotificationManager.Default.Unregister(); } catch (Exception ex) { App.WriteStartupLog("Could not unregister app notifications during shutdown.", ex); }
+        };
         _root.RequestedTheme = ReadAppSetting("AppTheme", "System default") switch
         {
             "Light" => ElementTheme.Light,
@@ -93,7 +124,8 @@ public sealed partial class MainWindow : Window
                 ShowLogin();
                 App.WriteStartupLog("Login screen created; beginning saved-session restoration.");
                 await RestoreSavedSessionAsync();
-                await CheckAndShowReleaseNotesAsync();
+                if (_isBackgroundHidden) _releaseNotesPending = true;
+                else await CheckAndShowReleaseNotesAsync();
                 App.WriteStartupLog("Startup session restoration and release-notes sequence completed.");
             }
             catch (Exception ex)
@@ -113,6 +145,140 @@ public sealed partial class MainWindow : Window
         App.WriteStartupLog("Splash timer started.");
     }
     [DllImport("user32.dll")] private static extern uint GetDpiForWindow(IntPtr hwnd);
+    private delegate IntPtr WindowProc(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam);
+    [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW", SetLastError = true)]
+    private static extern IntPtr SetWindowLongPtr(IntPtr hwnd, int index, WindowProc newProc);
+    [DllImport("user32.dll", EntryPoint = "CallWindowProcW", SetLastError = true)]
+    private static extern IntPtr CallWindowProc(IntPtr previousProc, IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam);
+    [DllImport("user32.dll", EntryPoint = "ShowWindow")]
+    private static extern bool ShowNativeWindow(IntPtr hwnd, int command);
+    [DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr hwnd);
+    [DllImport("user32.dll", EntryPoint = "LoadIconW", CharSet = CharSet.Unicode)] private static extern IntPtr LoadIcon(IntPtr instance, IntPtr iconName);
+    [DllImport("shell32.dll", EntryPoint = "Shell_NotifyIconW", CharSet = CharSet.Unicode)]
+    private static extern bool ShellNotifyIcon(uint message, ref NotifyIconData data);
+    [DllImport("user32.dll", EntryPoint = "CreatePopupMenu")] private static extern IntPtr CreatePopupMenu();
+    [DllImport("user32.dll", EntryPoint = "AppendMenuW", CharSet = CharSet.Unicode)]
+    private static extern bool AppendMenu(IntPtr menu, uint flags, UIntPtr id, string text);
+    [DllImport("user32.dll")] private static extern bool DestroyMenu(IntPtr menu);
+    [DllImport("user32.dll")] private static extern bool GetCursorPos(out NativePoint point);
+    [DllImport("user32.dll")] private static extern uint TrackPopupMenu(IntPtr menu, uint flags, int x, int y, int reserved, IntPtr hwnd, IntPtr rect);
+    [DllImport("user32.dll", EntryPoint = "SendMessageW", CharSet = CharSet.Unicode)] private static extern IntPtr SendMessage(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam);
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct NotifyIconData
+    {
+        public uint cbSize; public IntPtr hWnd; public uint uID; public uint uFlags; public uint uCallbackMessage; public IntPtr hIcon;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)] public string szTip;
+        public uint dwState; public uint dwStateMask;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 256)] public string szInfo;
+        public uint uTimeoutOrVersion;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 64)] public string szInfoTitle;
+        public uint dwInfoFlags; public Guid guidItem; public IntPtr hBalloonIcon;
+    }
+    [StructLayout(LayoutKind.Sequential)] private struct NativePoint { public int X; public int Y; }
+    private bool BackgroundModeEnabled => string.Equals(ReadAppSetting("RunInBackgroundAtStartup", "true"), "true", StringComparison.OrdinalIgnoreCase);
+    private void ConfigureStartupRegistration()
+    {
+        try
+        {
+            using var runKey = Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run", writable: true);
+            if (runKey is null) return;
+            if (BackgroundModeEnabled)
+            {
+                var executable = Environment.ProcessPath ?? Process.GetCurrentProcess().MainModule?.FileName;
+                if (!string.IsNullOrWhiteSpace(executable)) runKey.SetValue("Schoology", $"\"{executable}\" --background");
+            }
+            else runKey.DeleteValue("Schoology", throwOnMissingValue: false);
+        }
+        catch (Exception ex) { App.WriteStartupLog("Could not configure the current-user Windows startup entry.", ex); }
+    }
+    private IntPtr HandleWindowMessage(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam)
+    {
+        if (message == WmEndSession && wParam != IntPtr.Zero)
+        {
+            _allowExit = true;
+            DestroyTrayIcon();
+        }
+        if (message == WmClose && BackgroundModeEnabled && !_allowExit)
+        {
+            EnsureTrayIcon();
+            _isBackgroundHidden = true;
+            ShowNativeWindow(hwnd, 0);
+            return IntPtr.Zero;
+        }
+        if (message == WmActivateExisting)
+        {
+            ShowFromBackgroundNotification();
+            return IntPtr.Zero;
+        }
+        if (message == WmTrayCallback)
+        {
+            var trayMessage = unchecked((uint)lParam.ToInt64()) & 0xFFFF;
+            if (trayMessage == WmLButtonDoubleClick) ShowFromBackgroundNotification();
+            else if (trayMessage == WmRButtonUp) ShowTrayMenu(hwnd);
+            return IntPtr.Zero;
+        }
+        return _previousWindowProc == IntPtr.Zero ? IntPtr.Zero : CallWindowProc(_previousWindowProc, hwnd, message, wParam, lParam);
+    }
+    private void EnsureTrayIcon()
+    {
+        if (_trayIconAdded) return;
+        var hwnd = Win32Interop.GetWindowFromWindowId(AppWindow.Id);
+        var data = new NotifyIconData
+        {
+            cbSize = (uint)Marshal.SizeOf<NotifyIconData>(), hWnd = hwnd, uID = 1,
+            uFlags = 1 | 2 | 4, uCallbackMessage = WmTrayCallback,
+            hIcon = LoadIcon(IntPtr.Zero, new IntPtr(32512)), szTip = "Schoology", szInfo = string.Empty, szInfoTitle = string.Empty
+        };
+        _trayIconAdded = ShellNotifyIcon(0, ref data);
+    }
+    private void DestroyTrayIcon()
+    {
+        if (!_trayIconAdded) return;
+        var data = new NotifyIconData { cbSize = (uint)Marshal.SizeOf<NotifyIconData>(), hWnd = Win32Interop.GetWindowFromWindowId(AppWindow.Id), uID = 1, szTip = string.Empty, szInfo = string.Empty, szInfoTitle = string.Empty };
+        ShellNotifyIcon(2, ref data);
+        _trayIconAdded = false;
+    }
+    private void ShowTrayMenu(IntPtr hwnd)
+    {
+        var menu = CreatePopupMenu();
+        if (menu == IntPtr.Zero) return;
+        try
+        {
+            AppendMenu(menu, 0, new UIntPtr(1), "Open Schoology");
+            AppendMenu(menu, 0, new UIntPtr(2), "Exit");
+            GetCursorPos(out var point);
+            SetForegroundWindow(hwnd);
+            var command = TrackPopupMenu(menu, 0x0100 | 0x0002, point.X, point.Y, 0, hwnd, IntPtr.Zero);
+            if (command == 1) ShowFromBackgroundNotification();
+            else if (command == 2)
+            {
+                _allowExit = true;
+                DestroyTrayIcon();
+                SendMessage(hwnd, WmClose, IntPtr.Zero, IntPtr.Zero);
+            }
+        }
+        finally { DestroyMenu(menu); }
+    }
+    internal void HideToBackground()
+    {
+        if (!BackgroundModeEnabled) return;
+        EnsureTrayIcon();
+        _isBackgroundHidden = true;
+        ShowNativeWindow(Win32Interop.GetWindowFromWindowId(AppWindow.Id), 0);
+    }
+    internal void ShowFromBackgroundNotification()
+    {
+        var hwnd = Win32Interop.GetWindowFromWindowId(AppWindow.Id);
+        DestroyTrayIcon();
+        _isBackgroundHidden = false;
+        ShowNativeWindow(hwnd, 9);
+        SetForegroundWindow(hwnd);
+        if (_releaseNotesPending)
+        {
+            _releaseNotesPending = false;
+            _ = CheckAndShowReleaseNotesAsync();
+        }
+    }
     private void SetWindowSize(int widthDip, int heightDip)
     {
         try
@@ -368,6 +534,7 @@ public sealed partial class MainWindow : Window
 
     private void ShowLogin()
     {
+        _notificationTimer?.Stop();
         _page = "login";
         _sectionFrame = null;
         _ = StopQrScannerAsync();
@@ -1160,7 +1327,8 @@ public sealed partial class MainWindow : Window
             if (entry.Name == "Home")
                 nav.MenuItems.Add(new NavigationViewItemSeparator());
             var item = new NavigationViewItem { Content = entry.Name == "Upcoming" ? "Calendar" : entry.Name,
-                Tag = entry.Name == "Upcoming" ? "Calendar" : entry.Name, Icon = new SymbolIcon(entry.Icon) };
+                Tag = entry.Name == "Upcoming" ? "Calendar" : entry.Name,
+                Icon = entry.Name == "Notifications" ? new FontIcon { Glyph = "\uE7F4", FontSize = 18 } : new SymbolIcon(entry.Icon) };
             // Parent rows only expand/collapse. Selecting a specific child performs navigation.
             item.SelectsOnInvoked = entry.Name is not ("Courses" or "Groups");
             if (entry.Name is "Courses" or "Groups") item.IsExpanded = false;
@@ -1207,6 +1375,7 @@ public sealed partial class MainWindow : Window
         _ = StopQrScannerAsync();
         _page = "home";
         _section = section;
+        if (_session is not null) EnsureBackgroundNotificationPolling();
         if (section is "Courses" or "Groups" or "School Profile") { ShowThreePane(section); return; }
         UIElement page;
         if (section is "Upcoming" or "Recent Activity" or "Home")
@@ -1430,36 +1599,182 @@ public sealed partial class MainWindow : Window
 
     private UIElement BuildCourseDashboardContent()
     {
-        var list = new ListView { SelectionMode = ListViewSelectionMode.None, IsItemClickEnabled = false,
-            HorizontalContentAlignment = HorizontalAlignment.Stretch };
-        AutomationProperties.SetAutomationId(list, "HomeCourseDashboardList");
-        if (_courses.Count == 0) list.Items.Add(new ListViewItem { Content = Text("No courses were returned for this account.", 13) });
+        // Tauri uses responsive course cards with a wide image, title and period.
+        // GridView keeps the same wrapping layout and virtualizes large course lists.
+        var grid = new GridView
+        {
+            SelectionMode = ListViewSelectionMode.None,
+            IsItemClickEnabled = false,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            HorizontalContentAlignment = HorizontalAlignment.Stretch,
+            Padding = new Thickness(12),
+            Background = new SolidColorBrush(Colors.Transparent)
+        };
+        AutomationProperties.SetAutomationId(grid, "HomeCourseDashboardGrid");
+        if (_courses.Count == 0)
+        {
+            grid.Items.Add(new GridViewItem { Content = EmptyState("No courses were returned for this account.") });
+            return grid;
+        }
         foreach (var course in _courses)
         {
-            var row = new Grid { ColumnSpacing = 12, Padding = new Thickness(8, 10, 8, 10) };
-            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(52) });
-            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-                var image = new Border { Width = 48, Height = 48, CornerRadius = new CornerRadius(4),
-                Background = ThemeBrush("SchoologyBlueDarkBrush"),
-                Child = new TextBlock { Text = course.Name.Length > 0 ? course.Name[..1].ToUpperInvariant() : "C",
-                    FontSize = 22, Foreground = Brush("#FFFFFFFF"), HorizontalAlignment = HorizontalAlignment.Center,
-                    VerticalAlignment = VerticalAlignment.Center } };
+            var cardContent = new StackPanel { Spacing = 0 };
+            var imageSurface = new Border { Height = 130, Background = ThemeBrush("SchoologyBlueDarkBrush") };
+            imageSurface.Child = new TextBlock
+            {
+                Text = course.Name.Length > 0 ? course.Name[..1].ToUpperInvariant() : "C",
+                FontSize = 42, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                Foreground = Brush("#FFFFFFFF"), HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            };
             if (!string.IsNullOrWhiteSpace(course.ImageUrl))
             {
-                try { image.Child = new Image { Source = new BitmapImage(new Uri(NormalizeSchoologyImageUrl(course.ImageUrl))),
-                    Stretch = Microsoft.UI.Xaml.Media.Stretch.UniformToFill }; } catch { }
+                try { imageSurface.Child = new Image { Source = new BitmapImage(new Uri(NormalizeSchoologyImageUrl(course.ImageUrl))),
+                    Stretch = Microsoft.UI.Xaml.Media.Stretch.UniformToFill, Height = 130 }; } catch { }
             }
-            row.Children.Add(image);
-            var labels = new StackPanel { Spacing = 3, VerticalAlignment = VerticalAlignment.Center };
-            labels.Children.Add(Text(course.Name, 14, true));
-            if (!string.IsNullOrWhiteSpace(course.Subtitle)) labels.Children.Add(Text(course.Subtitle, 12));
-            Grid.SetColumn(labels, 1); row.Children.Add(labels);
-            var item = new ListViewItem { Content = row, Tag = course,
-                HorizontalContentAlignment = HorizontalAlignment.Stretch };
+            cardContent.Children.Add(imageSurface);
+            var labels = new StackPanel { Spacing = 4, Padding = new Thickness(12, 10, 12, 12),
+                Background = ThemeBrush("SchoologySurfaceBrush") };
+            labels.Children.Add(Text(course.Name, 15, true));
+            if (!string.IsNullOrWhiteSpace(course.Subtitle))
+            {
+                var subtitle = Text(course.Subtitle, 12);
+                subtitle.Foreground = ThemeBrush("SchoologyMutedTextBrush");
+                labels.Children.Add(subtitle);
+            }
+            cardContent.Children.Add(labels);
+            var card = new Border { Width = 250, Height = 205, CornerRadius = new CornerRadius(8),
+                BorderThickness = new Thickness(1), BorderBrush = ThemeBrush("SchoologyDividerBrush"),
+                Background = ThemeBrush("SchoologySurfaceBrush"), Child = cardContent };
+            var item = new GridViewItem { Content = card, Width = 250, Height = 205,
+                Padding = new Thickness(0), Margin = new Thickness(8), Tag = course };
+            AutomationProperties.SetName(item, course.Name);
             item.Tapped += (_, _) => ShowThreePane("Courses", course);
-            list.Items.Add(item);
+            grid.Items.Add(item);
         }
-        return list;
+        return grid;
+    }
+
+    private void EnsureBackgroundNotificationPolling()
+    {
+        if (_session is null || !string.Equals(ReadAppSetting("DesktopNotifications", "true"), "true", StringComparison.OrdinalIgnoreCase)) return;
+        if (_notificationTimer is null)
+        {
+            var timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(15) };
+            _notificationTimer = timer;
+            timer.Tick += async (_, _) =>
+            {
+                if (_notificationPollInProgress || _session is null) return;
+                timer.Stop();
+                try { await PollSchoologyNotificationsAsync(); }
+                finally
+                {
+                    timer.Interval = TimeSpan.FromMinutes(5);
+                    if (string.Equals(ReadAppSetting("DesktopNotifications", "true"), "true", StringComparison.OrdinalIgnoreCase))
+                        timer.Start();
+                }
+            };
+        }
+        if (!_notificationTimer.IsEnabled) _notificationTimer.Start();
+    }
+
+    private async Task PollSchoologyNotificationsAsync()
+    {
+        if (_session is null || _notificationPollInProgress ||
+            !string.Equals(ReadAppSetting("DesktopNotifications", "true"), "true", StringComparison.OrdinalIgnoreCase)) return;
+        _notificationPollInProgress = true;
+        try
+        {
+            using var document = await _api.GetNotificationsAsync(_session);
+            var root = document.RootElement;
+            JsonElement raw = default;
+            if (root.TryGetProperty("notification", out var notification)) raw = notification;
+            else if (root.TryGetProperty("notifications", out var notifications)) raw = notifications;
+            else if (root.TryGetProperty("data", out var data) && data.ValueKind == JsonValueKind.Object)
+            {
+                if (data.TryGetProperty("notification", out notification)) raw = notification;
+                else if (data.TryGetProperty("notifications", out notifications)) raw = notifications;
+            }
+            if (raw.ValueKind == JsonValueKind.Object)
+            {
+                if (raw.TryGetProperty("notification", out var nested)) raw = nested;
+                else if (raw.TryGetProperty("notifications", out nested)) raw = nested;
+                else if (raw.TryGetProperty("items", out nested)) raw = nested;
+            }
+            var items = raw.ValueKind == JsonValueKind.Array
+                ? raw.EnumerateArray().Where(item => item.ValueKind == JsonValueKind.Object).Select(item => item.Clone()).ToArray()
+                : Array.Empty<JsonElement>();
+            var userId = _session.UserId.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            var keys = items.Select(NotificationKey).ToArray();
+            string previousUser = string.Empty;
+            var previousIds = new HashSet<string>(StringComparer.Ordinal);
+            try
+            {
+                if (File.Exists(NotificationSeenStatePath))
+                {
+                    using var previous = JsonDocument.Parse(File.ReadAllText(NotificationSeenStatePath));
+                    previousUser = ProfileValue(previous.RootElement, "userId") ?? string.Empty;
+                    if (previous.RootElement.TryGetProperty("ids", out var ids) && ids.ValueKind == JsonValueKind.Array)
+                        foreach (var id in ids.EnumerateArray()) if (id.ValueKind == JsonValueKind.String) previousIds.Add(id.GetString() ?? string.Empty);
+                }
+            }
+            catch { }
+            if (previousUser == userId)
+                foreach (var item in items.Where(item => !previousIds.Contains(NotificationKey(item))).Take(3).Reverse())
+                    ShowSchoologyAppNotification(item);
+            Directory.CreateDirectory(Path.GetDirectoryName(NotificationSeenStatePath)!);
+            File.WriteAllText(NotificationSeenStatePath, JsonSerializer.Serialize(new { userId, ids = keys.Take(200).ToArray() }));
+        }
+        catch (Exception ex)
+        {
+            if (!ex.Message.Contains("401", StringComparison.OrdinalIgnoreCase) &&
+                !ex.Message.Contains("Not signed in", StringComparison.OrdinalIgnoreCase))
+                App.WriteStartupLog("Background Schoology notification polling failed.", ex);
+        }
+        finally { _notificationPollInProgress = false; }
+    }
+
+    private static string NotificationKey(JsonElement item)
+    {
+        var id = ProfileValue(item, "id", "notification_id", "notificationId");
+        if (!string.IsNullOrWhiteSpace(id)) return id;
+        return string.Join(":", ProfileValue(item, "type") ?? string.Empty,
+            ProfileValue(item, "created", "timestamp") ?? string.Empty,
+            ProfileValue(item, "body", "message", "title") ?? string.Empty);
+    }
+
+    private static string NotificationBody(JsonElement item)
+    {
+        var body = ProfileValue(item, "body", "message", "title") ?? "You have a new Schoology notification";
+        JsonElement args = default;
+        if (item.TryGetProperty("body_args", out args) || item.TryGetProperty("bodyArgs", out args) || item.TryGetProperty("body_arg", out args))
+        {
+            if (args.ValueKind == JsonValueKind.Array)
+                foreach (var argument in args.EnumerateArray())
+                {
+                    var replacement = ProfileValue(argument, "title", "name") ?? string.Empty;
+                    var index = body.IndexOf("%s", StringComparison.Ordinal);
+                    if (index >= 0) body = body[..index] + replacement + body[(index + 2)..];
+                }
+        }
+        var clean = string.Join(" ", Regex.Replace(body, "<[^>]*>", " ")
+            .Replace("&nbsp;", " ", StringComparison.OrdinalIgnoreCase)
+            .Replace("&amp;", "&", StringComparison.OrdinalIgnoreCase)
+            .Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+        return clean.Length > 220 ? clean[..220] : clean;
+    }
+
+    private static void ShowSchoologyAppNotification(JsonElement item)
+    {
+        try
+        {
+            var body = NotificationBody(item);
+            var builder = new AppNotificationBuilder().AddText("Schoology").AddText(body);
+            if (!string.Equals(ReadAppSetting("NotificationSound", "false"), "true", StringComparison.OrdinalIgnoreCase))
+                builder.MuteAudio();
+            AppNotificationManager.Default.Show(builder.BuildNotification());
+        }
+        catch (Exception ex) { App.WriteStartupLog("Could not display a Windows app notification.", ex); }
     }
 
     private UIElement BuildUpcomingContent()
@@ -2127,6 +2442,20 @@ public sealed partial class MainWindow : Window
         panel.Children.Add(Surface(appearance, new Thickness(14)));
         var behavior = new StackPanel { Spacing = 8 };
         behavior.Children.Add(Text("Behavior", 18, true));
+        var desktopNotifications = new CheckBox { Content = "Show Schoology desktop notifications",
+            IsChecked = !string.Equals(ReadAppSetting("DesktopNotifications", "true"), "false", StringComparison.OrdinalIgnoreCase) };
+        desktopNotifications.Checked += (_, _) => { WriteAppSetting("DesktopNotifications", "true"); EnsureBackgroundNotificationPolling(); };
+        desktopNotifications.Unchecked += (_, _) => { WriteAppSetting("DesktopNotifications", "false"); _notificationTimer?.Stop(); };
+        behavior.Children.Add(desktopNotifications);
+        var notificationSound = new CheckBox { Content = "Play notification sounds",
+            IsChecked = string.Equals(ReadAppSetting("NotificationSound", "false"), "true", StringComparison.OrdinalIgnoreCase) };
+        notificationSound.Checked += (_, _) => WriteAppSetting("NotificationSound", "true");
+        notificationSound.Unchecked += (_, _) => WriteAppSetting("NotificationSound", "false");
+        behavior.Children.Add(notificationSound);
+        var startupBackground = new CheckBox { Content = "Run Schoology in the background at Windows startup", IsChecked = BackgroundModeEnabled };
+        startupBackground.Checked += (_, _) => { WriteAppSetting("RunInBackgroundAtStartup", "true"); ConfigureStartupRegistration(); };
+        startupBackground.Unchecked += (_, _) => { WriteAppSetting("RunInBackgroundAtStartup", "false"); ConfigureStartupRegistration(); };
+        behavior.Children.Add(startupBackground);
         var reduceMotion = new CheckBox { Content = "Reduce motion",
             IsChecked = string.Equals(ReadAppSetting("ReduceMotion", "false"), "true", StringComparison.OrdinalIgnoreCase) };
         reduceMotion.Checked += (_, _) => WriteAppSetting("ReduceMotion", "true");
@@ -2230,6 +2559,7 @@ public sealed partial class MainWindow : Window
         sidebar.Children.Add(identity);
 
         var detail = new Frame { Background = new SolidColorBrush(Colors.Transparent) };
+        var compactFrame = new Frame { Background = new SolidColorBrush(Colors.Transparent) };
         var navigation = new ListView { SelectionMode = ListViewSelectionMode.Single,
             IsItemClickEnabled = false, HorizontalContentAlignment = HorizontalAlignment.Stretch,
             Background = new SolidColorBrush(Colors.Transparent) };
@@ -2318,7 +2648,6 @@ public sealed partial class MainWindow : Window
         // In portrait the tab selector precedes the entity infobox.
         Grid.SetRow(compactSelector, 0); narrow.Children.Add(compactSelector);
         Grid.SetRow(compactIdentity, 1); narrow.Children.Add(compactIdentity);
-        var compactFrame = new Frame { Background = new SolidColorBrush(Colors.Transparent) };
         Grid.SetRow(compactFrame, 2); narrow.Children.Add(compactFrame);
 
         void ShowTab(string tab)
@@ -2505,7 +2834,13 @@ public sealed partial class MainWindow : Window
                 var row = new Grid { ColumnSpacing = 12, Padding = new Thickness(8, 9, 8, 9) };
                 row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
                 row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-                row.Children.Add(new FontIcon { Glyph = tab == "Materials" ? MaterialGlyph(record.Data) : "\uE8A5",
+                if (tab == "Materials" && IsFolderRecord(record.Data))
+                {
+                    var folderIcon = new Image { Width = 32, Height = 32, Stretch = Microsoft.UI.Xaml.Media.Stretch.Uniform };
+                    row.Children.Add(folderIcon);
+                    _ = ApplyFolderIconAsync(folderIcon, FolderColorName(record.Data));
+                }
+                else row.Children.Add(new FontIcon { Glyph = tab == "Materials" ? MaterialGlyph(record.Data) : "\uE8A5",
                     FontSize = 22, Foreground = ThemeBrush("SchoologyBlueBrush"), Width = 32 });
                 var labels = new StackPanel { Spacing = 3 };
                 labels.Children.Add(Text(record.Title, 14, true));
@@ -2556,7 +2891,14 @@ public sealed partial class MainWindow : Window
                 var row = new Grid { ColumnSpacing = 12, Padding = new Thickness(8, 9, 8, 9) };
                 row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(36) });
                 row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-                row.Children.Add(new FontIcon { Glyph = MaterialGlyph(record.Data), FontSize = 23,
+                if (IsFolderRecord(record.Data))
+                {
+                    var folderIcon = new Image { Width = 25, Height = 25, Stretch = Microsoft.UI.Xaml.Media.Stretch.Uniform,
+                        VerticalAlignment = VerticalAlignment.Center };
+                    row.Children.Add(folderIcon);
+                    _ = ApplyFolderIconAsync(folderIcon, FolderColorName(record.Data));
+                }
+                else row.Children.Add(new FontIcon { Glyph = MaterialGlyph(record.Data), FontSize = 23,
                     Foreground = ThemeBrush("SchoologyBlueBrush"), VerticalAlignment = VerticalAlignment.Center });
                 var labels = new StackPanel { Spacing = 3, VerticalAlignment = VerticalAlignment.Center };
                 labels.Children.Add(Text(title, 14, true));
@@ -2803,10 +3145,28 @@ public sealed partial class MainWindow : Window
         catch { }
     }
 
+    private static bool IsFolderRecord(JsonElement data)
+    {
+        var type = ProfileValue(data, "type", "templateDocumentType") ?? string.Empty;
+        if (type.Equals("folder", StringComparison.OrdinalIgnoreCase)) return true;
+        return data.TryGetProperty("template_fields", out var fields) &&
+            (ProfileValue(fields, "document_type", "documentType") ?? string.Empty).Equals("folder", StringComparison.OrdinalIgnoreCase);
+    }
+    private static string FolderColorName(JsonElement data)
+    {
+        var color = (ProfileValue(data, "color", "folder_color", "folderColor") ?? "gray").Trim().ToLowerInvariant();
+        return color is "black" or "blue" or "gray" or "green" or "orange" or "pink" or "purple" or "red" or "yellow"
+            ? color : "gray";
+    }
+    private static async Task ApplyFolderIconAsync(Image image, string color)
+    {
+        try { image.Source = await FolderIcons.LoadAsync(color); }
+        catch (Exception ex) { App.WriteStartupLog("Could not load an embedded Schoology folder icon.", ex); }
+    }
     private static string MaterialGlyph(System.Text.Json.JsonElement data)
     {
+        if (IsFolderRecord(data)) return "\uE8B7";
         var type = ProfileValue(data, "type", "document_type", "mime_type", "mimeType", "extension")?.ToLowerInvariant() ?? "";
-        if (type.Contains("folder")) return "\uE8B7";
         if (type.Contains("pdf")) return "\uEA90";
         if (type.Contains("image") || type is "png" or "jpg" or "jpeg") return "\uEB9F";
         if (type.Contains("video")) return "\uE714";
@@ -3771,14 +4131,13 @@ public sealed partial class MainWindow : Window
             HorizontalAlignment = HorizontalAlignment.Stretch,
             VerticalAlignment = VerticalAlignment.Stretch,
             MinWidth = 400,
-            MinHeight = 320,
-            CreationProperties = new CoreWebView2CreationProperties
-            {
-                UserDataFolder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                    "Schoology", "WebView2")
-            }
+            MinHeight = 320
         };
-        await _sharedWebView.EnsureCoreWebView2Async();
+        var webViewDataFolder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "Schoology", "WebView2");
+        Directory.CreateDirectory(webViewDataFolder);
+        _sharedWebViewEnvironment ??= await CoreWebView2Environment.CreateAsync(null, webViewDataFolder, null);
+        await _sharedWebView.EnsureCoreWebView2Async(_sharedWebViewEnvironment);
         UpdateSharedWebViewTheme();
         _sharedWebView.CoreWebView2.Settings.AreDevToolsEnabled = false;
         _sharedWebView.CoreWebView2.Settings.IsWebMessageEnabled = false;

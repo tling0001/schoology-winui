@@ -42,12 +42,22 @@ jobs:
       - name: Restore and build WinUI app
         shell: pwsh
         run: |
-          msbuild Schoology.WinUI/Schoology.WinUI.csproj /restore /t:Build /p:Configuration=Release /p:Platform=${{ matrix.architecture }} /p:RuntimeIdentifier=${{ matrix.rid }} /p:WindowsPackageType=None /p:WindowsAppSDKSelfContained=true /p:SelfContained=true
+          msbuild Schoology.WinUI/Schoology.WinUI.csproj /restore /t:Build /p:Configuration=Release /p:Platform=${{ matrix.architecture }} /p:RuntimeIdentifier=${{ matrix.rid }} /p:WindowsPackageType=None /p:WindowsAppSDKSelfContained=false /p:SelfContained=true
 
       - name: Publish self-contained app
         shell: pwsh
         run: |
-          msbuild Schoology.WinUI/Schoology.WinUI.csproj /restore /t:Publish /p:Configuration=Release /p:Platform=${{ matrix.architecture }} /p:RuntimeIdentifier=${{ matrix.rid }} /p:WindowsPackageType=None /p:WindowsAppSDKSelfContained=true /p:SelfContained=true /p:PublishDir="..\publish\${{ matrix.rid }}\"
+          msbuild Schoology.WinUI/Schoology.WinUI.csproj /restore /t:Publish /p:Configuration=Release /p:Platform=${{ matrix.architecture }} /p:RuntimeIdentifier=${{ matrix.rid }} /p:WindowsPackageType=None /p:WindowsAppSDKSelfContained=false /p:SelfContained=true /p:PublishDir="..\publish\${{ matrix.rid }}\"
+
+      - name: Include the matching Windows App SDK runtime installer
+        shell: pwsh
+        run: |
+          $runtimeArchitecture = "${{ matrix.architecture }}".ToLowerInvariant()
+          $runtimeUrl = "https://aka.ms/windowsappsdk/1.8/1.8.260804001/windowsappruntimeinstall-$runtimeArchitecture.exe"
+          $runtimeInstaller = "publish/${{ matrix.rid }}/WindowsAppRuntimeInstall.exe"
+          Invoke-WebRequest -Uri $runtimeUrl -OutFile $runtimeInstaller
+          if (!(Test-Path $runtimeInstaller)) { throw "Windows App SDK runtime installer was not downloaded: $runtimeInstaller" }
+          Write-Host "Included Windows App SDK 1.8.11 runtime installer for $runtimeArchitecture."
 
       - name: Verify published executable, runtime, and WinUI XAML resources
         shell: pwsh
@@ -67,6 +77,9 @@ jobs:
           $runtimeConfig = Get-Content $runtimeConfigPath -Raw | ConvertFrom-Json
           $hasBundledFramework = $null -ne $runtimeConfig.runtimeOptions.includedFrameworks -and @($runtimeConfig.runtimeOptions.includedFrameworks | Where-Object { $_.name -eq "Microsoft.NETCore.App" -and $_.version -like "10.0.*" }).Count -gt 0
           if (!$hasBundledFramework) { throw "Published app does not declare its bundled .NET 10 framework." }
+
+          $windowsAppRuntimeInstaller = Join-Path $publishDir "WindowsAppRuntimeInstall.exe"
+          if (!(Test-Path $windowsAppRuntimeInstaller)) { throw "Windows App SDK runtime installer is missing: $windowsAppRuntimeInstaller" }
 
           $priFiles = @(Get-ChildItem -Path $publishDir -Filter "*.pri" -File)
           if ($priFiles.Count -eq 0) { throw "Published WinUI app is missing its PRI resource index; compiled XAML cannot be resolved." }
