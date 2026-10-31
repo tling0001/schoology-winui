@@ -1359,7 +1359,7 @@ public sealed partial class MainWindow : Window
                 return;
             }
             if (item.Tag is not string rootTarget) return;
-            if (rootTarget == "Sign out") { _auth.SignOut(); _session = null; _sharedWebViewInitialized = false; _sharedWebViewSessionUserId = 0; _sectionFrame = null; ShowLogin(); }
+            if (rootTarget == "Sign out") { SchoologyAuthService.SignOut(); _session = null; _sharedWebViewInitialized = false; _sharedWebViewSessionUserId = 0; _sectionFrame = null; ShowLogin(); }
             else ShowHome(rootTarget == "Home" ? "Recent Activity" : rootTarget);
         };
         _appNavigation = nav;
@@ -1926,7 +1926,7 @@ public sealed partial class MainWindow : Window
         var right = new Grid { RowSpacing = 8 };
         right.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         right.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-        var heading = Text(DateTime.Today.ToString("dddd, MMMM d"), 18, true);
+        var heading = Text(DateTime.Today.ToString("dddd, MMMM d", System.Globalization.CultureInfo.CurrentCulture), 18, true);
         right.Children.Add(heading);
         var list = new ListView { SelectionMode = ListViewSelectionMode.None, IsItemClickEnabled = false,
             HorizontalContentAlignment = HorizontalAlignment.Stretch };
@@ -1937,7 +1937,7 @@ public sealed partial class MainWindow : Window
         calendar.SelectedDatesChanged += (_, _) =>
         {
             var date = calendar.SelectedDates.FirstOrDefault().Date;
-            heading.Text = date.ToString("dddd, MMMM d");
+            heading.Text = date.ToString("dddd, MMMM d", System.Globalization.CultureInfo.CurrentCulture);
             RenderGroupedUpcoming(list, events, date);
         };
         _ = FetchCalendarIntoAsync(list, heading, () => events, value => events = value);
@@ -2913,7 +2913,7 @@ public sealed partial class MainWindow : Window
         try
         {
             var session = _session ?? throw new InvalidOperationException("Sign in to view this assignment.");
-            var assignmentId = JsonLong(record.Data, "id", "assignment_id", "assignmentId");
+            var assignmentId = JsonLong(record.Data, "assignment_id", "assignmentId", "id");
             if (assignmentId <= 0) throw new InvalidOperationException("Schoology did not return a valid assignment ID.");
             using var document = await _api.GetAssignmentAsync(session, sectionId, assignmentId);
             var assignment = document.RootElement;
@@ -2977,7 +2977,7 @@ public sealed partial class MainWindow : Window
                     try
                     {
                         using var submissionDocument = await _api.GetAssignmentSubmissionAsync(session, sectionId, gradeItemId, session.UserId);
-                        var submissionRecords = SchoologyApiClient.ReadRecords(submissionDocument.RootElement, "submission", "submissions");
+                        var submissionRecords = SchoologyApiClient.ReadRecords(submissionDocument.RootElement, "revision", "revisions", "submission", "submissions");
                         if (submissionRecords.Count == 0) submissions.Children.Add(EmptyState("No submission has been recorded."));
                         foreach (var submission in submissionRecords)
                         {
@@ -3273,7 +3273,8 @@ public sealed partial class MainWindow : Window
                     Foreground = ThemeBrush("SchoologyBlueBrush"), VerticalAlignment = VerticalAlignment.Center });
                 var labels = new StackPanel { Spacing = 3, VerticalAlignment = VerticalAlignment.Center };
                 labels.Children.Add(Text(title, 14, true));
-                var subtitle = ProfileValue(record.Data, "description", "body", "due", "due_date");
+                var isAssignment = materialType is "assignment" or "assignment_v2";
+                var subtitle = isAssignment ? null : ProfileValue(record.Data, "description", "body", "due", "due_date");
                 if (!string.IsNullOrWhiteSpace(subtitle)) labels.Children.Add(Text(subtitle, 12));
                 Grid.SetColumn(labels, 1); row.Children.Add(labels);
                 var item = new ListViewItem { Content = row, Tag = record,
@@ -3286,20 +3287,9 @@ public sealed partial class MainWindow : Window
         {
             var title = ProfileValue(record.Data, "title", "name", "filename", "file_name") ?? record.Title;
             var materialType = (ProfileValue(record.Data, "type", "resource_type", "document_type", "documentType") ?? "").ToLowerInvariant();
-            var materialId = JsonLong(record.Data, "id", "assignment_id", "assignmentId", "document_id", "documentId");
+            var materialId = JsonLong(record.Data, "assignment_id", "assignmentId", "id", "document_id", "documentId");
             if ((materialType is "assignment" or "assignment_v2") && materialId > 0 && _session is not null)
             {
-                using var assignmentDocument = await _api.GetAssignmentAsync(_session, sectionId, materialId);
-                var assignment = assignmentDocument.RootElement.TryGetProperty("assignment", out var nestedAssignment)
-                    ? nestedAssignment : assignmentDocument.RootElement;
-                var assignmentType = (ProfileValue(assignment, "assignment_type", "assignmentType", "type") ?? "").ToLowerInvariant();
-                var assignmentUrl = ProfileValue(assignment, "web_url", "webUrl", "launch_url", "launchUrl");
-                if (assignmentType == "lti_submission" && !string.IsNullOrWhiteSpace(assignmentUrl))
-                {
-                    await OpenSharedWebViewAsync(assignmentUrl, title, allowLtiExternal: true,
-                        () => ShowThreePane("Courses", _courses.FirstOrDefault(course => course.Id == sectionId)));
-                    return;
-                }
                 await ShowAssignmentDetailsAsync(sectionId, record);
                 return;
             }
@@ -3510,6 +3500,32 @@ public sealed partial class MainWindow : Window
         return url;
     }
 
+    private async Task LoadPostImageAsync(Image image, string rawUrl)
+    {
+        try
+        {
+            var session = _session;
+            if (session is null) return;
+            var bytes = await _auth.GetSchoologyFileBytesAsync(session, NormalizeSchoologyImageUrl(rawUrl));
+            using var stream = new InMemoryRandomAccessStream();
+            using (var writer = new DataWriter(stream.GetOutputStreamAt(0)))
+            {
+                writer.WriteBytes(bytes);
+                await writer.StoreAsync();
+                await writer.FlushAsync();
+                writer.DetachStream();
+            }
+            stream.Seek(0);
+            var bitmap = new BitmapImage();
+            await bitmap.SetSourceAsync(stream);
+            image.Source = bitmap;
+        }
+        catch
+        {
+            image.Visibility = Visibility.Collapsed;
+        }
+    }
+
     private async Task LoadMemberAvatarAsync(long userId, Image image)
     {
         try
@@ -3649,45 +3665,68 @@ public sealed partial class MainWindow : Window
             body.TextWrapping = TextWrapping.WrapWholeWords;
             card.Children.Add(body);
         }
-        if (update.Data.ValueKind == System.Text.Json.JsonValueKind.Object &&
-            update.Data.TryGetProperty("attachments", out var attachments) &&
-            attachments.ValueKind == System.Text.Json.JsonValueKind.Array)
+        if (update.Data.ValueKind == System.Text.Json.JsonValueKind.Object)
         {
-            var attachmentPanel = new StackPanel { Spacing = 5 };
-            foreach (var attachment in attachments.EnumerateArray())
+            JsonElement attachmentRoot = default;
+            if (!update.Data.TryGetProperty("attachments", out attachmentRoot) &&
+                !update.Data.TryGetProperty("attachment", out attachmentRoot))
+                update.Data.TryGetProperty("file-attachment", out attachmentRoot);
+
+            var attachmentPanel = new StackPanel { Spacing = 8 };
+            void RenderAttachment(JsonElement attachment, bool fileModel = false)
             {
-                var name = ProfileValue(attachment, "title", "name", "filename", "file_name") ?? "Attachment";
-                var type = ProfileValue(attachment, "type", "mime_type", "extension");
+                if (attachment.ValueKind != JsonValueKind.Object) return;
+                var name = ProfileValue(attachment, "title", "name", "filename", "file_name", "converted_filename") ?? "Attachment";
+                var mime = ProfileValue(attachment, "filemime", "converted_filemime", "mime_type", "mimeType", "type") ?? "";
+                var extension = (ProfileValue(attachment, "extension", "converted_extension") ?? "").TrimStart('.').ToLowerInvariant();
+                var thumbnail = ProfileValue(attachment, "thumbnail", "thumbnail_url", "thumbnailUrl", "preview_url", "previewUrl");
+                var url = thumbnail ?? ProfileValue(attachment, "converted_download_path", "convertedDownloadPath",
+                    "download_path", "downloadPath", "download_url", "downloadUrl", "url", "file_url", "fileUrl");
+                var isImage = mime.StartsWith("image/", StringComparison.OrdinalIgnoreCase) ||
+                    new[] { "jpg", "jpeg", "png", "gif", "webp", "bmp", "heic" }.Contains(extension, StringComparer.OrdinalIgnoreCase) ||
+                    (ProfileValue(attachment, "type") ?? "").Equals("image", StringComparison.OrdinalIgnoreCase);
+                if (isImage && !string.IsNullOrWhiteSpace(url))
+                {
+                    try
+                    {
+                        var image = new Image { Stretch = Microsoft.UI.Xaml.Media.Stretch.Uniform,
+                            MaxHeight = 360, MaxWidth = 720, HorizontalAlignment = HorizontalAlignment.Left };
+                        attachmentPanel.Children.Add(image);
+                        _ = LoadPostImageAsync(image, url);
+                    }
+                    catch { attachmentPanel.Children.Add(Text(name, 12)); }
+                    return;
+                }
                 var line = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
-                line.Children.Add(new FontIcon { Glyph = "\uE8A5", FontSize = 17,
+                line.Children.Add(new FontIcon { Glyph = fileModel ? "\uE8A5" : "\uE8A9", FontSize = 17,
                     Foreground = ThemeBrush("SchoologyBlueBrush") });
-                line.Children.Add(Text(string.IsNullOrWhiteSpace(type) ? name : $"{name} · {type}", 12, true));
+                line.Children.Add(Text(string.IsNullOrWhiteSpace(mime) ? name : $"{name} · {mime}", 12, true));
                 attachmentPanel.Children.Add(line);
             }
-            if (attachmentPanel.Children.Count > 0) card.Children.Add(Surface(attachmentPanel, new Thickness(10)));
-        }
-
-        if (update.Data.ValueKind == JsonValueKind.Object)
-        {
-            JsonElement updateAttachments = default;
-            foreach (var key in new[] { "attachments", "attachment", "files" })
-                if (update.Data.TryGetProperty(key, out updateAttachments)) break;
-            var values = updateAttachments.ValueKind == JsonValueKind.Array ? updateAttachments.EnumerateArray().ToArray() :
-                updateAttachments.ValueKind == JsonValueKind.Object ? new[] { updateAttachments } : Array.Empty<JsonElement>();
-            foreach (var attachment in values)
+            void RenderCollection(JsonElement container, params string[] keys)
             {
-                var url = ProfileValue(attachment, "url", "download_url", "downloadUrl", "file_url", "fileUrl", "thumbnail_url");
-                var mime = ProfileValue(attachment, "mime_type", "mimeType", "type", "extension") ?? "";
-                var name = ProfileValue(attachment, "title", "name", "filename", "file_name") ?? "Attachment";
-                if (!string.IsNullOrWhiteSpace(url) && (mime.Contains("image", StringComparison.OrdinalIgnoreCase) ||
-                    new[] { ".jpg", ".jpeg", ".png", ".gif", ".webp" }.Any(ext => url.Contains(ext, StringComparison.OrdinalIgnoreCase))))
+                if (container.ValueKind != JsonValueKind.Object) return;
+                foreach (var key in keys)
                 {
-                    try { card.Children.Add(new Image { Source = new BitmapImage(new Uri(NormalizeSchoologyImageUrl(url))),
-                        Stretch = Microsoft.UI.Xaml.Media.Stretch.Uniform, MaxHeight = 360, HorizontalAlignment = HorizontalAlignment.Left }); }
-                    catch { card.Children.Add(Text(name, 12)); }
+                    if (!container.TryGetProperty(key, out var collection)) continue;
+                    if (collection.ValueKind == JsonValueKind.Array)
+                        foreach (var item in collection.EnumerateArray()) RenderAttachment(item, key.Equals("file", StringComparison.OrdinalIgnoreCase));
+                    else if (collection.ValueKind == JsonValueKind.Object)
+                    {
+                        if (collection.TryGetProperty("file", out var nestedFiles) && nestedFiles.ValueKind == JsonValueKind.Array)
+                            foreach (var item in nestedFiles.EnumerateArray()) RenderAttachment(item, true);
+                        else RenderAttachment(collection, key.Equals("file", StringComparison.OrdinalIgnoreCase));
+                    }
                 }
-                else card.Children.Add(Text(name, 12));
             }
+            if (attachmentRoot.ValueKind == JsonValueKind.Array)
+                foreach (var item in attachmentRoot.EnumerateArray()) RenderAttachment(item);
+            else if (attachmentRoot.ValueKind == JsonValueKind.Object)
+            {
+                RenderCollection(attachmentRoot, "attachment", "file", "files", "links", "videos", "embeds", "external_tools");
+            }
+            if (attachmentPanel.Children.Count > 0)
+                card.Children.Add(Surface(attachmentPanel, new Thickness(10)));
             JsonElement poll = default;
             foreach (var key in new[] { "pollUpdateModel", "poll_update_model", "poll", "poll_update", "pollUpdate" })
                 if (update.Data.TryGetProperty(key, out poll)) break;
@@ -4331,7 +4370,8 @@ public sealed partial class MainWindow : Window
                 using var document = await _api.GetMessageAsync(_session, id, currentMode == "Sent");
                 var rootMessage = document.RootElement;
                 if (rootMessage.ValueKind == System.Text.Json.JsonValueKind.Object &&
-                    rootMessage.TryGetProperty("message", out var nested)) rootMessage = nested;
+                    rootMessage.TryGetProperty("message", out var nested) &&
+                    nested.ValueKind == System.Text.Json.JsonValueKind.Object) rootMessage = nested;
                 var subject = ProfileValue(rootMessage, "subject", "message_subject", "title") ?? record.Title;
                 var sender = ProfileValue(rootMessage, "author_name", "user_name", "sender_name", "name_display") ??
                     ProfileValue(record.Data, "author_name", "user_name", "sender_name") ?? "Schoology user";

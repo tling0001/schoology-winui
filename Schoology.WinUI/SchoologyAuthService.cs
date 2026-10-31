@@ -11,6 +11,111 @@ namespace Schoology.WinUI;
 /// Protocol details mirror the supplied official Schoology 2026.10.0 port.28 source.</summary>
 internal sealed partial class SchoologyAuthService
 {
+    private static async Task<string> ReadResponseTextAsync(HttpContent content, CancellationToken cancellationToken)
+    {
+        var bytes = await content.ReadAsByteArrayAsync(cancellationToken);
+        return Encoding.UTF8.GetString(bytes).TrimStart('\uFEFF');
+    }
+
+    internal async Task<byte[]> GetSchoologyFileBytesAsync(Session session, string rawUrl, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(session);
+        if (string.IsNullOrWhiteSpace(rawUrl))
+            throw new InvalidOperationException("Schoology did not provide an attachment URL.");
+
+        var candidate = rawUrl.Trim();
+        Uri uri;
+        if (candidate.StartsWith("/", StringComparison.Ordinal))
+            uri = new Uri($"https://{ApiHost}{candidate}");
+        else if (!Uri.TryCreate(candidate, UriKind.Absolute, out uri!))
+            throw new InvalidOperationException("Schoology returned an invalid attachment URL.");
+
+        if (uri.Scheme != Uri.UriSchemeHttps || !string.IsNullOrEmpty(uri.UserInfo))
+            throw new InvalidOperationException("Schoology attachment URLs must use HTTPS.");
+
+        // File URLs may be emitted on the web host; Tauri's binary request signs
+        // the matching API-host path instead, preserving the same route/query.
+        if (uri.Host.Equals(WebHost, StringComparison.OrdinalIgnoreCase))
+            uri = new UriBuilder(uri) { Host = ApiHost }.Uri;
+
+        var isApi = uri.Host.Equals(ApiHost, StringComparison.OrdinalIgnoreCase);
+        var isStorage = IsTrustedSignedStorageUrl(uri);
+        if (!isApi && !isStorage)
+            throw new InvalidOperationException("Schoology returned an attachment URL on an untrusted host.");
+
+        HttpResponseMessage response;
+        if (isApi)
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, uri);
+            AddOAuth(request, HttpMethod.Get, uri.AbsoluteUri, session.Token, session.Secret, null);
+            AddClientIdentity(request);
+            response = await OAuthHttp.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+        }
+        else
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, uri);
+            request.Headers.TryAddWithoutValidation("User-Agent", "okhttp/4.8.0");
+            response = await OAuthHttp.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+        }
+
+        try
+        {
+            var currentUri = uri;
+            for (var redirects = 0; response.StatusCode is HttpStatusCode.MovedPermanently or HttpStatusCode.Redirect or
+                HttpStatusCode.RedirectMethod or HttpStatusCode.TemporaryRedirect or HttpStatusCode.PermanentRedirect; redirects++)
+            {
+                if (redirects >= 5 || response.Headers.Location is null)
+                    throw new InvalidOperationException("Schoology's attachment file used too many redirects.");
+                var target = response.Headers.Location.IsAbsoluteUri
+                    ? response.Headers.Location : new Uri(currentUri, response.Headers.Location);
+                if (target.Scheme != Uri.UriSchemeHttps || !string.IsNullOrEmpty(target.UserInfo) ||
+                    !(IsSchoologyOrLausdHost(target.Host) || IsTrustedSignedStorageUrl(target)))
+                    throw new InvalidOperationException("Schoology redirected the attachment to an untrusted host.");
+
+                response.Dispose();
+                currentUri = target;
+                using var request = new HttpRequestMessage(HttpMethod.Get, target);
+                // Never forward OAuth credentials or cookies beyond the API host.
+                request.Headers.TryAddWithoutValidation("User-Agent", "okhttp/4.8.0");
+                response = await OAuthHttp.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            }
+
+            if (!response.IsSuccessStatusCode)
+                throw new InvalidOperationException($"Schoology attachment download failed (HTTP {(int)response.StatusCode}).");
+            if (response.Content.Headers.ContentLength is long length && length > 60 * 1024 * 1024)
+                throw new InvalidOperationException("The attachment exceeds the 60 MB safety limit.");
+            var bytes = await response.Content.ReadAsByteArrayAsync(cancellationToken);
+            if (bytes.Length > 60 * 1024 * 1024)
+                throw new InvalidOperationException("The attachment exceeds the 60 MB safety limit.");
+            return bytes;
+        }
+        finally { response.Dispose(); }
+    }
+
+    private static bool IsSchoologyOrLausdHost(string host)
+    {
+        host = host.TrimEnd('.').ToLowerInvariant();
+        return host == "schoology.com" || host.EndsWith(".schoology.com", StringComparison.Ordinal) ||
+            host == "schoologyca.com" || host.EndsWith(".schoologyca.com", StringComparison.Ordinal) ||
+            host == "lms.lausd.net" || host.EndsWith(".lms.lausd.net", StringComparison.Ordinal);
+    }
+
+    private static bool IsTrustedSignedStorageUrl(Uri uri)
+    {
+        var host = uri.IdnHost.TrimEnd('.').ToLowerInvariant();
+        var allowedHost = host == "s3.amazonaws.com" ||
+            (host.StartsWith("s3.", StringComparison.Ordinal) && host.EndsWith(".amazonaws.com", StringComparison.Ordinal)) ||
+            (host.StartsWith("s3-", StringComparison.Ordinal) && host.EndsWith(".amazonaws.com", StringComparison.Ordinal)) ||
+            host.EndsWith(".s3.amazonaws.com", StringComparison.Ordinal) ||
+            (host.Contains(".s3.", StringComparison.Ordinal) && host.EndsWith(".amazonaws.com", StringComparison.Ordinal)) ||
+            host.EndsWith(".cloudfront.net", StringComparison.Ordinal) ||
+            host == "storage.googleapis.com" || host.EndsWith(".storage.googleapis.com", StringComparison.Ordinal);
+        var query = uri.Query.ToLowerInvariant();
+        var signed = new[] { "signature=", "awsaccesskeyid=", "x-amz-signature=", "x-goog-signature=", "key-pair-id=" }
+            .Any(key => query.Contains(key, StringComparison.Ordinal));
+        return allowedHost && signed;
+    }
+
     private const string ConsumerKey = "998121f221d5dc0f4956ee6946d27d5e04e55635e";
     private const string ConsumerSecret = "5cff9d3780d64695d762ba8e05a34e9e";
     private const string MobileCookie = "s_mobile=03447c0175ac0c7299a5508fde9569fc";
@@ -46,7 +151,7 @@ internal sealed partial class SchoologyAuthService
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
         AddClientIdentity(request);
         using var response = await Http.SendAsync(request, cancellationToken);
-        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+        var body = await ReadResponseTextAsync(response.Content, cancellationToken);
         if (!response.IsSuccessStatusCode) throw new InvalidOperationException(ReadableError(body, "School search failed", response.StatusCode));
         using var document = JsonDocument.Parse(body);
         if (!document.RootElement.TryGetProperty("school", out var schools) || schools.ValueKind != JsonValueKind.Array) return [];
@@ -69,7 +174,7 @@ internal sealed partial class SchoologyAuthService
         using var request = new HttpRequestMessage(HttpMethod.Post, $"https://{WebHost}/oauth/authorize_auto") { Content = new FormUrlEncodedContent(fields) };
         AddClientIdentity(request);
         using var response = await Http.SendAsync(request, cancellationToken);
-        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+        var body = await ReadResponseTextAsync(response.Content, cancellationToken);
         if (!response.IsSuccessStatusCode) throw new InvalidOperationException(ReadableError(body, "Schoology rejected the sign-in", response.StatusCode));
         var session = await ExchangeAndVerifyAsync(temporary, cancellationToken);
         SaveSession(session);
@@ -91,7 +196,7 @@ internal sealed partial class SchoologyAuthService
         using var response = await SendSignedRequestAsync(
             HttpMethod.Post, url, () => new FormUrlEncodedContent(fields),
             temporary.Token, temporary.Secret, scannedQrData, cancellationToken);
-        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+        var body = await ReadResponseTextAsync(response.Content, cancellationToken);
         if (!response.IsSuccessStatusCode)
             throw new InvalidOperationException(ReadableError(body, "QR authorization failed", response.StatusCode));
         var session = await ExchangeAndVerifyAsync(temporary, cancellationToken);
@@ -101,7 +206,7 @@ internal sealed partial class SchoologyAuthService
 
     public async Task<SchoolBrowserRequest> BeginSchoolBrowserLoginAsync(School school, CancellationToken cancellationToken = default)
     {
-        if (school is null) throw new ArgumentNullException(nameof(school));
+        ArgumentNullException.ThrowIfNull(school);
         var rawDomain = (school.Domain ?? school.LoginUrl ?? string.Empty).Trim();
         if (string.IsNullOrWhiteSpace(rawDomain))
             throw new InvalidOperationException("This school did not provide a secure sign-in domain.");
@@ -152,7 +257,8 @@ internal sealed partial class SchoologyAuthService
         {
             App.WriteStartupLog("Opening Windows Credential Locker.");
             var vault = new PasswordVault();
-            var credential = FindVaultCredentials(vault).FirstOrDefault();
+            var credentials = FindVaultCredentials(vault);
+            var credential = credentials.Count > 0 ? credentials[0] : null;
             if (credential is null)
             {
                 App.WriteStartupLog("No Schoology credential exists in Windows Credential Locker.");
@@ -200,7 +306,7 @@ internal sealed partial class SchoologyAuthService
         }
     }
 
-    public void SignOut()
+    public static void SignOut()
     {
         try
         {
@@ -281,7 +387,7 @@ internal sealed partial class SchoologyAuthService
         var url = $"https://{ApiHost}/v1/oauth/request_token";
         using var response = await SendSignedRequestAsync(
             HttpMethod.Get, url, () => null, "", "", null, cancellationToken);
-        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+        var body = await ReadResponseTextAsync(response.Content, cancellationToken);
         if (!response.IsSuccessStatusCode) throw new InvalidOperationException(ReadableError(body, "Could not start Schoology OAuth", response.StatusCode));
         var values = ParseForm(body);
         if (!values.TryGetValue("oauth_token", out var token) || !values.TryGetValue("oauth_token_secret", out var secret))
@@ -294,7 +400,7 @@ internal sealed partial class SchoologyAuthService
         var url = $"https://{ApiHost}/v1/oauth/access_token";
         using var response = await SendSignedRequestAsync(
             HttpMethod.Get, url, () => null, temporary.Token, temporary.Secret, null, cancellationToken);
-        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+        var body = await ReadResponseTextAsync(response.Content, cancellationToken);
         if (!response.IsSuccessStatusCode) throw new InvalidOperationException(ReadableError(body, "Schoology could not exchange the OAuth token", response.StatusCode));
         var values = ParseForm(body);
         if (!values.TryGetValue("oauth_token", out var token) || !values.TryGetValue("oauth_token_secret", out var secret))
@@ -310,7 +416,7 @@ internal sealed partial class SchoologyAuthService
         var url = $"https://{ApiHost}/v1/users/me";
         using var response = await SendSignedRequestAsync(
             HttpMethod.Get, url, () => null, token, secret, null, cancellationToken);
-        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+        var body = await ReadResponseTextAsync(response.Content, cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
             App.WriteStartupLog($"Schoology OAuth profile request failed: HTTP {(int)response.StatusCode}; final URL: {response.RequestMessage?.RequestUri}; response: {SafeDiagnosticBody(body)}");
@@ -333,7 +439,7 @@ internal sealed partial class SchoologyAuthService
         try
         {
             using var response = await Http.GetAsync($"https://{WebHost}/oauth/timestamp", cancellationToken);
-            if (response.IsSuccessStatusCode && long.TryParse(await response.Content.ReadAsStringAsync(cancellationToken), out var timestamp))
+            if (response.IsSuccessStatusCode && long.TryParse(await ReadResponseTextAsync(response.Content, cancellationToken), out var timestamp))
                 Interlocked.Exchange(ref _serverTimeOffset, timestamp - DateTimeOffset.UtcNow.ToUnixTimeSeconds());
         }
         catch (Exception ex) when (ex is not OperationCanceledException) { }
@@ -367,7 +473,9 @@ internal sealed partial class SchoologyAuthService
         var normalized = string.Join("&", parameters.Select(p => $"{p.Key}={p.Value}"));
         var baseUri = $"{uri.Scheme}://{uri.Host}{uri.AbsolutePath}";
         var signatureBase = $"{method.Method.ToUpperInvariant()}&{JavaEncode(baseUri)}&{JavaEncode(normalized)}";
+#pragma warning disable CA5350 // Schoology OAuth 1.0a explicitly requires HMAC-SHA1.
         using var hmac = new HMACSHA1(Encoding.UTF8.GetBytes($"{ConsumerSecret}&{secret}"));
+#pragma warning restore CA5350
         var signature = Convert.ToBase64String(hmac.ComputeHash(Encoding.UTF8.GetBytes(signatureBase)));
         var header = $"OAuth oauth_consumer_key=\"{ConsumerKey}\", oauth_nonce=\"{nonce}\", oauth_signature_method=\"HMAC-SHA1\", oauth_timestamp=\"{timestamp}\", oauth_token=\"{token}\", oauth_version=\"1.0\", oauth_signature=\"{JavaEncode(signature)}\"";
         request.Headers.TryAddWithoutValidation("Authorization", header);

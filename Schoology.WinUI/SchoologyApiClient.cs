@@ -203,7 +203,11 @@ internal sealed class SchoologyApiClient
     internal Task<JsonDocument> GetAssignmentSubmissionAsync(
         SchoologyAuthService.Session session, long sectionId, long gradeItemId, long userId,
         CancellationToken ct = default) =>
-        _auth.GetApiJsonAsync(session, $"sections/{sectionId}/submissions/{gradeItemId}/{userId}", null, ct);
+        _auth.GetApiJsonAsync(session, $"sections/{sectionId}/submissions/{gradeItemId}/{userId}",
+            new Dictionary<string, string>
+            {
+                ["with_attachments"] = "TRUE", ["all_revisions"] = "TRUE", ["start"] = "0", ["limit"] = "200"
+            }, ct);
     internal Task<JsonDocument> GetDocumentAsync(
         SchoologyAuthService.Session session, long sectionId, long documentId, CancellationToken ct = default) =>
         _auth.GetApiJsonAsync(session, $"sections/{sectionId}/documents/{documentId}", null, ct);
@@ -316,7 +320,7 @@ internal sealed partial class SchoologyAuthService
         IReadOnlyDictionary<string, string> fields,
         CancellationToken cancellationToken = default)
     {
-        if (session is null) throw new ArgumentNullException(nameof(session));
+        ArgumentNullException.ThrowIfNull(session);
         var normalizedPath = path.TrimStart('/');
         if (normalizedPath.Length == 0 ||
             normalizedPath.Split('/').Any(segment => segment is "." or "..") ||
@@ -325,7 +329,7 @@ internal sealed partial class SchoologyAuthService
         var url = $"https://{ApiHost}/v1/{normalizedPath}";
         using var response = await SendSignedRequestAsync(method, url,
             () => new FormUrlEncodedContent(fields), session.Token, session.Secret, null, cancellationToken, fields);
-        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+        var body = await ReadResponseTextAsync(response.Content, cancellationToken);
         if (!response.IsSuccessStatusCode)
             throw new InvalidOperationException(ReadableError(body, "Schoology could not update this item", response.StatusCode));
         if (string.IsNullOrWhiteSpace(body)) return JsonDocument.Parse("{}");
@@ -346,7 +350,7 @@ internal sealed partial class SchoologyAuthService
         IReadOnlyDictionary<string, string>? query,
         CancellationToken cancellationToken = default)
     {
-        if (session is null) throw new ArgumentNullException(nameof(session));
+        ArgumentNullException.ThrowIfNull(session);
         var normalizedPath = path.TrimStart('/');
         if (normalizedPath.Length == 0 ||
             normalizedPath.Split('/').Any(segment => segment is "." or "..") ||
@@ -361,7 +365,7 @@ internal sealed partial class SchoologyAuthService
         using var response = await SendSignedRequestAsync(
             method, builder.Uri.AbsoluteUri, () => null,
             session.Token, session.Secret, null, cancellationToken);
-        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+        var body = await ReadResponseTextAsync(response.Content, cancellationToken);
         if (!response.IsSuccessStatusCode)
             throw new InvalidOperationException(ReadableError(body, "Schoology could not load account data", response.StatusCode));
         try { return JsonDocument.Parse(body); }
@@ -384,7 +388,7 @@ internal sealed partial class SchoologyAuthService
         var defaultDomain = WebHost.EndsWith("schoologyca.com", StringComparison.OrdinalIgnoreCase) ? ".schoologyca.com" : ".schoology.com";
         var url = $"https://{ApiHost}/v1/sessionstart?domain={Uri.EscapeDataString(WebSessionUrl.TrimEnd((char)47))}";
         using var response = await SendSignedRequestAsync(HttpMethod.Get, url, () => null, session.Token, session.Secret, null, ct);
-        var body = await response.Content.ReadAsStringAsync(ct);
+        var body = await ReadResponseTextAsync(response.Content, ct);
         if (!response.IsSuccessStatusCode)
             throw new InvalidOperationException(ReadableError(body, "Schoology could not prepare the browser session", response.StatusCode));
         var cookies = new Dictionary<string, WebSessionCookie>(StringComparer.OrdinalIgnoreCase);
@@ -394,8 +398,8 @@ internal sealed partial class SchoologyAuthService
             path = string.IsNullOrWhiteSpace(path) || !path.StartsWith('/') ? "/" : path;
             var host = domain.TrimStart('.').ToLowerInvariant();
             var targetHost = WebHost.ToLowerInvariant();
-            var validDomain = host == "schoology.com" || host.EndsWith(".schoology.com") ||
-                host == "schoologyca.com" || host.EndsWith(".schoologyca.com");
+            var validDomain = host == "schoology.com" || host.EndsWith(".schoology.com", StringComparison.Ordinal) ||
+                host == "schoologyca.com" || host.EndsWith(".schoologyca.com", StringComparison.Ordinal);
             var appliesToTarget = targetHost == host || targetHost.EndsWith("." + host, StringComparison.Ordinal);
             if (string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(value) ||
                 name.Any(char.IsControl) || name.IndexOfAny([';', '=', ',']) >= 0 ||
@@ -466,7 +470,7 @@ internal sealed partial class SchoologyAuthService
                 .Select(pair => $"{Uri.EscapeDataString(pair.Key)}={Uri.EscapeDataString(pair.Value)}"));
         using var response = await SendSignedRequestAsync(HttpMethod.Get, builder.Uri.AbsoluteUri, () => null,
             session.Token, session.Secret, null, ct);
-        var body = await response.Content.ReadAsStringAsync(ct);
+        var body = await ReadResponseTextAsync(response.Content, ct);
         if (!response.IsSuccessStatusCode)
             throw new InvalidOperationException(ReadableError(body, "Schoology could not load this resource", response.StatusCode));
         try { return JsonDocument.Parse(body); }
@@ -482,7 +486,7 @@ internal sealed partial class SchoologyAuthService
         using var response = await SendSignedRequestAsync(method, $"https://{ApiHost}/v1/{normalized}",
             () => new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json"),
             session.Token, session.Secret, null, ct);
-        var body = await response.Content.ReadAsStringAsync(ct);
+        var body = await ReadResponseTextAsync(response.Content, ct);
         if (!response.IsSuccessStatusCode)
             throw new InvalidOperationException(ReadableError(body, "Schoology could not update this request", response.StatusCode));
         try { return JsonDocument.Parse(string.IsNullOrWhiteSpace(body) ? "{}" : body); }

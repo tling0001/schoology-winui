@@ -1,3 +1,11 @@
+## [2026.10.0-port.22]
+
+- Fix course-material assignment rows so they show only the assignment title, and route assignment IDs using the explicit assignment ID field when present.
+- Fix message detail rendering so the plain-text `message` body is not mistaken for a nested response object.
+- Render post images and file attachments from the official nested `attachments.files.file` structure.
+- Read Schoology API responses as UTF-8 bytes so malformed response charset headers cannot break shared WebView session setup.
+- Fix locale-sensitive formatting and the reported .NET analyzer warnings; retain the HMAC-SHA1 OAuth signature required by Schoology's OAuth 1.0a API.
+
 ## [2026.10.0-port.20]
 
 - Add official Android-compatible poll voting in a native WinUI ListView.

@@ -122,7 +122,7 @@ public partial class App : Application
                     entry.Append("Exception detail: ")
                         .Append(current.GetType().FullName)
                         .Append(" | HRESULT=0x")
-                        .Append(current.HResult.ToString("X8"))
+                        .Append(current.HResult.ToString("X8", System.Globalization.CultureInfo.InvariantCulture))
                         .Append(" | ")
                         .AppendLine(current.Message);
                     entry.AppendLine(current.StackTrace);
