@@ -1,3 +1,14 @@
+## [2026.10.0-port.25] - 2026-10-31
+
+- Fix the connected-animation compile error without removing the transition.
+- Replace the oversized compact NavigationView profile content with a normal profile icon and single-line label.
+- Let course/group/school member lists use the available landscape viewport instead of a short fixed-height list.
+- Add native discussion and event detail pages with Info and Discussion/Comments selector tabs, following Tauri port.28.
+- Use virtualized discussion ListViews and message-bubble icons; use pencil and calendar glyphs for assignments and events in materials/upcoming, with group/school upcoming items retaining their owning realm.
+- Resolve commenter profiles before rendering the comments modal and reuse the shared comment row renderer in assignment, discussion, and event comments.
+- Replace post action-button pairs with native WinUI SplitButtons and count flyouts.
+- Add a homepage Create MenuFlyout for Update, Discussion, and Event, with native creation dialogs and matching Schoology API endpoints.
+
 ## [2026.10.0-port.24] - 2026-10-31
 
 - Refresh the README to document the current native WinUI feature set, build/release workflow, and reference-source policy.

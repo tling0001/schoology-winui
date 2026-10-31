@@ -166,6 +166,12 @@ internal sealed class SchoologyApiClient
         _auth.SendApiFormAsync(session, HttpMethod.Post, $"like/{updateId}",
             new Dictionary<string, string> { ["like_action"] = like ? "true" : "false" }, cancellationToken);
 
+    internal Task<JsonDocument> GetCommentLikesAsync(SchoologyAuthService.Session session, long entityId, long commentId, CancellationToken ct = default) =>
+        _auth.GetApiJsonAsync(session, $"like/{entityId}/comment/{commentId}", null, ct);
+    internal Task<JsonDocument> SetCommentLikeAsync(SchoologyAuthService.Session session, long entityId, long commentId, bool like, CancellationToken ct = default) =>
+        _auth.SendApiFormAsync(session, HttpMethod.Post, $"like/{entityId}/comment/{commentId}",
+            new Dictionary<string, string> { ["like_action"] = like ? "true" : "false" }, ct);
+
     internal Task<JsonDocument> AddUpdateCommentAsync(
         SchoologyAuthService.Session session, string kind, long entityId, long updateId,
         string comment, CancellationToken cancellationToken = default)
@@ -211,6 +217,30 @@ internal sealed class SchoologyApiClient
     }
     internal Task<JsonDocument> LaunchResourceAppAsync(SchoologyAuthService.Session session, long appId, CancellationToken ct = default) =>
         _auth.GetApiJsonAtVersionAsync(session, "v2", $"resources/applications/{appId}/launch", null, ct);
+
+    internal Task<JsonDocument> GetDiscussionAsync(SchoologyAuthService.Session session, string kind, long entityId, long id, CancellationToken ct = default) =>
+        _auth.GetApiJsonAsync(session, $"{EntityRealm(kind)}/{entityId}/discussions/{id}",
+            new Dictionary<string, string> { ["with_attachments"] = "TRUE", ["richtext"] = "1" }, ct);
+    internal Task<JsonDocument> GetDiscussionCommentsAsync(SchoologyAuthService.Session session, string kind, long entityId, long id, CancellationToken ct = default) =>
+        _auth.GetApiJsonAsync(session, $"{EntityRealm(kind)}/{entityId}/discussions/{id}/comments",
+            new Dictionary<string, string> { ["start"] = "0", ["limit"] = "100", ["with_attachments"] = "TRUE", ["richtext"] = "1" }, ct);
+    internal Task<JsonDocument> GetEventAsync(SchoologyAuthService.Session session, string kind, long entityId, long id, CancellationToken ct = default) =>
+        _auth.GetApiJsonAsync(session, $"{EntityRealm(kind)}/{entityId}/events/{id}",
+            new Dictionary<string, string> { ["with_attachments"] = "TRUE", ["richtext"] = "1" }, ct);
+    internal Task<JsonDocument> GetEventCommentsAsync(SchoologyAuthService.Session session, string kind, long entityId, long id, CancellationToken ct = default) =>
+        _auth.GetApiJsonAsync(session, $"{EntityRealm(kind)}/{entityId}/events/{id}/comments",
+            new Dictionary<string, string> { ["start"] = "0", ["limit"] = "50", ["with_attachments"] = "TRUE", ["richtext"] = "1" }, ct);
+    internal Task<JsonDocument> CreateDiscussionAsync(SchoologyAuthService.Session session, string kind, long entityId, string title, string body, CancellationToken ct = default) =>
+        _auth.SendApiFormAsync(session, HttpMethod.Post, $"{EntityRealm(kind)}/{entityId}/discussions",
+            new Dictionary<string, string> { ["title"] = title, ["body"] = body, ["published"] = "1" }, ct);
+    internal Task<JsonDocument> CreateEventAsync(SchoologyAuthService.Session session, string kind, long entityId, string title, string description, string start, bool allDay, bool commentsEnabled, CancellationToken ct = default) =>
+        _auth.SendApiFormAsync(session, HttpMethod.Post, $"{EntityRealm(kind)}/{entityId}/events",
+            new Dictionary<string, string> { ["title"] = title, ["description"] = description, ["start"] = start,
+                ["is_all_day"] = allDay ? "1" : "0", ["rsvp"] = "0", ["comments_enabled"] = commentsEnabled ? "1" : "0" }, ct);
+    private static string EntityRealm(string kind) => kind switch
+    {
+        "Groups" => "groups", "School Profile" => "schools", "Profile" => "users", _ => "sections"
+    };
 
     internal Task<JsonDocument> GetAssignmentAsync(
         SchoologyAuthService.Session session, long sectionId, long assignmentId, CancellationToken ct = default) =>

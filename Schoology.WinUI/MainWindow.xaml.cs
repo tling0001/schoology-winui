@@ -1269,23 +1269,15 @@ public sealed partial class MainWindow : Window
         App.WriteStartupLog($"Initial Frame.Navigate completed for section '{section}'.");
         _sectionFrame = sectionFrame;
         nav.Content = sectionFrame;
-        var profileRow = new Grid { ColumnSpacing = 12, Padding = new Thickness(8, 12, 8, 12) };
-        profileRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(44) });
-        profileRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        var profileAvatar = new Image { Width = 40, Height = 40, Stretch = Microsoft.UI.Xaml.Media.Stretch.UniformToFill };
         var profileName = _session is null ? "Profile" :
             ProfileValue(_session.User, "name_display", "display_name", "name") ?? "My Profile";
-        var profilePicture = _session is null ? null :
-            ProfileValue(_session.User, "picture_url", "pictureUrl", "picture", "photo_url");
+        IconElement profileIcon = new SymbolIcon(Symbol.Contact);
+        var profilePicture = _session is null ? null : ProfileValue(_session.User, "picture_url", "pictureUrl", "picture", "photo_url");
         if (!string.IsNullOrWhiteSpace(profilePicture))
-            try { profileAvatar.Source = new BitmapImage(new Uri(NormalizeSchoologyImageUrl(profilePicture))); } catch { }
-        profileRow.Children.Add(new Border { Width = 40, Height = 40, CornerRadius = new CornerRadius(20),
-            Background = Brush("#FF526F8B"), Child = profileAvatar });
-        var profileLabels = new StackPanel { Spacing = 2, VerticalAlignment = VerticalAlignment.Center };
-        profileLabels.Children.Add(Text(profileName, 14, true));
-        profileLabels.Children.Add(Text("Schoology account", 11));
-        Grid.SetColumn(profileLabels, 1); profileRow.Children.Add(profileLabels);
-        nav.MenuItems.Add(new NavigationViewItem { Content = profileRow, Tag = "Profile" });
+            try { profileIcon = new ImageIcon { Source = new BitmapImage(new Uri(NormalizeSchoologyImageUrl(profilePicture))) }; } catch { }
+        var profileItem = new NavigationViewItem { Content = profileName, Icon = profileIcon, Tag = "Profile" };
+        AutomationProperties.SetName(profileItem, profileName + " profile");
+        nav.MenuItems.Add(profileItem);
         nav.MenuItems.Add(new NavigationViewItemSeparator());
 
         var items = new (string Name, Symbol Icon)[]
@@ -1415,6 +1407,59 @@ public sealed partial class MainWindow : Window
             CloseButtonText = "Close", XamlRoot = _root.XamlRoot
         };
         await dialog.ShowAsync();
+    }
+
+    private async Task ShowCreateDiscussionOrEventDialogAsync(bool isEvent)
+    {
+        var destinations = _courses.Select(course => ("Courses", course)).Concat(_groups.Select(group => ("Groups", group))).ToList();
+        if (destinations.Count == 0) { await ShowApiErrorAsync("Unable to create content", "No course or group destinations are available."); return; }
+        var content = new StackPanel { Spacing = 10, MinWidth = 360 };
+        var destination = new ComboBox { Header = "Post to", HorizontalAlignment = HorizontalAlignment.Stretch,
+            ItemsSource = destinations.Select(item => item.Item2.Name).ToArray(), SelectedIndex = 0 };
+        var title = new TextBox { Header = "Title", PlaceholderText = isEvent ? "Event title" : "Discussion title" };
+        var description = new TextBox { Header = "Description", PlaceholderText = "Add details…", AcceptsReturn = true,
+            TextWrapping = TextWrapping.Wrap, MinHeight = 100 };
+        content.Children.Add(destination); content.Children.Add(title); content.Children.Add(description);
+        DatePicker? eventDate = null; TimePicker? eventTime = null;
+        if (isEvent)
+        {
+            eventDate = new DatePicker { Header = "Date", Date = DateTimeOffset.Now };
+            eventTime = new TimePicker { Header = "Time", Time = DateTimeOffset.Now.TimeOfDay };
+            content.Children.Add(eventDate); content.Children.Add(eventTime);
+        }
+        var dialog = new ContentDialog { Title = isEvent ? "Create event" : "Create discussion", Content = content,
+            PrimaryButtonText = "Create", CloseButtonText = "Cancel", DefaultButton = ContentDialogButton.Primary, XamlRoot = _root.XamlRoot };
+        if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
+        if (string.IsNullOrWhiteSpace(title.Text)) { await ShowApiErrorAsync("Unable to create content", "Enter a title before creating this item."); return; }
+        var selected = destinations[Math.Clamp(destination.SelectedIndex, 0, destinations.Count - 1)];
+        try
+        {
+            var start = isEvent ? (eventDate!.Date.DateTime.Date + eventTime!.Time).ToString("yyyy-MM-dd HH:mm:ss", System.Globalization.CultureInfo.InvariantCulture) : "";
+            using var created = isEvent
+                ? await _api.CreateEventAsync(_session!, selected.Item1, selected.Item2.Id, title.Text.Trim(), description.Text.Trim(), start, true, true)
+                : await _api.CreateDiscussionAsync(_session!, selected.Item1, selected.Item2.Id, title.Text.Trim(), description.Text.Trim());
+            ShowThreePane(selected.Item1, selected.Item2);
+        }
+        catch (Exception ex) { await ShowApiErrorAsync(isEvent ? "Unable to create event" : "Unable to create discussion", ex.Message); }
+    }
+
+    private async Task ShowCreateUpdateDialogCoreAsync()
+    {
+        var session = _session; if (session is null) return;
+        var destinations = _courses.Select(course => ("Courses", course)).Concat(_groups.Select(group => ("Groups", group))).ToList();
+        if (destinations.Count == 0) return;
+        var content = new StackPanel { Spacing = 10, MinWidth = 360 };
+        var picker = new ComboBox { Header = "Post to", ItemsSource = destinations.Select(item => item.Item2.Name).ToArray(),
+            SelectedIndex = 0, HorizontalAlignment = HorizontalAlignment.Stretch };
+        var body = new TextBox { Header = "Write an update", PlaceholderText = "Share an update…", AcceptsReturn = true,
+            TextWrapping = TextWrapping.Wrap, MinHeight = 120 };
+        content.Children.Add(picker); content.Children.Add(body);
+        var dialog = new ContentDialog { Title = "Create update", Content = content, PrimaryButtonText = "Post", CloseButtonText = "Cancel",
+            DefaultButton = ContentDialogButton.Primary, XamlRoot = _root.XamlRoot };
+        if (await dialog.ShowAsync() != ContentDialogResult.Primary || string.IsNullOrWhiteSpace(body.Text)) return;
+        var selected = destinations[Math.Clamp(picker.SelectedIndex, 0, destinations.Count - 1)];
+        try { using var created = await _api.CreateUpdateAsync(session, selected.Item1, selected.Item2.Id, body.Text.Trim()); ShowThreePane(selected.Item1, selected.Item2); }
+        catch (Exception ex) { await ShowApiErrorAsync("Unable to post update", ex.Message); }
     }
 
     private void UpdateTitleBarCreateButton(string section, string? tab)
@@ -1643,6 +1688,23 @@ public sealed partial class MainWindow : Window
                 _userProfileCache[id] = user.Clone();
             }
             catch (Exception ex) { App.WriteStartupLog($"Could not resolve Schoology post author {id}.", ex); }
+        }));
+    }
+
+    private async Task ResolveCommentAuthorsAsync(IReadOnlyList<SchoologyApiRecord> comments, SchoologyAuthService.Session session)
+    {
+        var ids = comments.Select(comment => JsonLong(comment.Data, "uid", "user_id", "userId", "author_id", "authorId", "creator_id"))
+            .Where(id => id > 0).Distinct().Where(id => !_userProfileCache.ContainsKey(id)).ToArray();
+        await Task.WhenAll(ids.Select(async id =>
+        {
+            try
+            {
+                using var profile = await _api.GetUserAsync(session, id);
+                var user = profile.RootElement;
+                if (user.ValueKind == JsonValueKind.Object && user.TryGetProperty("user", out var nested)) user = nested;
+                _userProfileCache[id] = user.Clone();
+            }
+            catch (Exception ex) { App.WriteStartupLog($"Could not resolve Schoology comment author {id}.", ex); }
         }));
     }
 
@@ -1889,7 +1951,8 @@ public sealed partial class MainWindow : Window
             System.Globalization.DateTimeStyles.AssumeLocal, out var parsed) ? parsed : null;
     }
 
-    private void RenderGroupedUpcoming(ListView list, IReadOnlyList<SchoologyApiRecord> records, DateTime? selectedDate = null)
+    private void RenderGroupedUpcoming(ListView list, IReadOnlyList<SchoologyApiRecord> records, DateTime? selectedDate = null,
+        string? entityKind = null, long entityId = 0)
     {
         list.Items.Clear();
         var ordered = records.Select(record => new { Record = record,
@@ -1907,7 +1970,10 @@ public sealed partial class MainWindow : Window
                 var row = new Grid { ColumnSpacing = 10, Padding = new Thickness(12, 9, 12, 9) };
                 row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(30) });
                 row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-                row.Children.Add(new FontIcon { Glyph = "\\uE787", FontSize = 19,
+                var upcomingType = (ProfileValue(entry.Record.Data, "type", "event_type", "eventType") ?? "").ToLowerInvariant();
+                var upcomingGlyph = upcomingType == "discussion" ? "\\uE8BD" :
+                    upcomingType == "assignment" ? "\\uE70F" : "\\uE787";
+                row.Children.Add(new FontIcon { Glyph = upcomingGlyph, FontSize = 19,
                     Foreground = ThemeBrush("SchoologyBlueBrush"), VerticalAlignment = VerticalAlignment.Center });
                 var details = new StackPanel { Spacing = 3 };
                 details.Children.Add(Text(entry.Record.Title, 14, true));
@@ -1918,7 +1984,7 @@ public sealed partial class MainWindow : Window
                 Grid.SetColumn(details, 1); row.Children.Add(details);
                 var item = new ListViewItem { Content = row, Tag = entry.Record,
                     HorizontalContentAlignment = HorizontalAlignment.Stretch };
-                item.Tapped += async (_, _) => await ShowUpcomingItemAsync(entry.Record);
+                item.Tapped += async (_, _) => await ShowUpcomingItemAsync(entry.Record, entityKind, entityId);
                 list.Items.Add(item);
             }
         }
@@ -1926,7 +1992,7 @@ public sealed partial class MainWindow : Window
             list.Items.Add(new ListViewItem { Content = Surface(Text("Nothing is scheduled for this date.")) });
     }
 
-    private async Task ShowUpcomingItemAsync(SchoologyApiRecord record)
+    private async Task ShowUpcomingItemAsync(SchoologyApiRecord record, string? entityKind = null, long entityId = 0)
     {
         var type = (ProfileValue(record.Data, "type", "event_type", "eventType") ?? "").ToLowerInvariant();
         var itemId = JsonLong(record.Data, "assignment_id", "assignmentId", "id");
@@ -1952,10 +2018,16 @@ public sealed partial class MainWindow : Window
                 record.Title, allowLtiExternal: true, onBack: () => ShowHome("Upcoming"));
             return;
         }
-        if (type == "discussion" && sectionId > 0 && itemId > 0)
+        if (type == "discussion" && itemId > 0)
         {
-            await OpenSharedWebViewAsync($"https://app.schoology.com/section/{sectionId}/discussion/view/{itemId}",
-                record.Title, onBack: () => ShowHome("Upcoming"));
+            var targetKind = entityKind ?? "Courses"; var targetId = entityId > 0 ? entityId : sectionId;
+            if (targetId > 0) await ShowDiscussionDetailsAsync(targetKind, targetId, record);
+            return;
+        }
+        if (type == "event" && itemId > 0)
+        {
+            var targetKind = entityKind ?? "Courses"; var targetId = entityId > 0 ? entityId : sectionId;
+            if (targetId > 0) await ShowEventDetailsAsync(targetKind, targetId, record);
             return;
         }
 
@@ -2800,7 +2872,7 @@ public sealed partial class MainWindow : Window
             var session = _session ?? throw new InvalidOperationException("Sign in to view upcoming items.");
             using var document = await _api.GetEntityTabAsync(session, kind, entityId, "Upcoming");
             var records = SchoologyApiClient.ReadRecords(document.RootElement, "event", "events", "assignment", "assignments");
-            RenderGroupedUpcoming(list, records);
+            RenderGroupedUpcoming(list, records, null, kind, entityId);
             status.Text = records.Count == 0 ? "Nothing is scheduled for this " +
                 (kind == "Groups" ? "group" : kind == "School Profile" ? "school" : "course") + "." :
                 $"{records.Count} upcoming items";
@@ -3049,6 +3121,7 @@ public sealed partial class MainWindow : Window
             {
                 using var commentDocument = await _api.GetAssignmentCommentsAsync(session, sectionId, assignmentId);
                 commentRecords = SchoologyApiClient.ReadRecords(commentDocument.RootElement, "comment", "comments");
+                await ResolveCommentAuthorsAsync(commentRecords, session);
             }
             catch (Exception ex) { commentLoadError = ex.Message; }
             UIElement BuildCommentsView()
@@ -3056,15 +3129,7 @@ public sealed partial class MainWindow : Window
                 var comments = new StackPanel { Spacing = 8, Margin = new Thickness(8) };
                 if (commentLoadError is not null) comments.Children.Add(EmptyState("Unable to load assignment comments.", commentLoadError));
                 else if (commentRecords.Count == 0) comments.Children.Add(EmptyState("No comments yet."));
-                foreach (var comment in commentRecords)
-                {
-                    var card = new StackPanel { Spacing = 4, Padding = new Thickness(12) };
-                    var author = ProfileValue(comment.Data, "name_display", "display_name", "author_name", "username");
-                    var body = ProfileValue(comment.Data, "comment", "comment_text", "body", "text");
-                    if (!string.IsNullOrWhiteSpace(author)) card.Children.Add(Text(author, 12, true));
-                    if (!string.IsNullOrWhiteSpace(body)) card.Children.Add(Text(StripMarkup(body), 13));
-                    comments.Children.Add(Surface(card));
-                }
+                else foreach (var comment in commentRecords) comments.Children.Add(BuildCommentRow(comment, assignmentId));
                 return new ScrollViewer { Content = comments, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
             }
 
@@ -3136,7 +3201,7 @@ public sealed partial class MainWindow : Window
                     : null;
                 frame.Content = nextContent;
                 if (animation is not null)
-                    nextContent.Loaded += (_, _) => animation.TryStart(nextContent);
+                    _root.DispatcherQueue.TryEnqueue(() => animation.TryStart(nextContent));
             }
             void UpdateAssignmentCreateContext(bool isWide, string selectedTab)
             {
@@ -3210,6 +3275,79 @@ public sealed partial class MainWindow : Window
         catch (Exception ex) { await ShowApiErrorAsync("Unable to load assignment", ex.Message); }
     }
 
+    private async Task ShowDiscussionDetailsAsync(string kind, long entityId, SchoologyApiRecord record) =>
+        await ShowContentDetailsAsync(kind, entityId, record, false);
+    private async Task ShowEventDetailsAsync(string kind, long entityId, SchoologyApiRecord record) =>
+        await ShowContentDetailsAsync(kind, entityId, record, true);
+
+    private async Task ShowContentDetailsAsync(string kind, long entityId, SchoologyApiRecord record, bool isEvent)
+    {
+        try
+        {
+            var session = _session ?? throw new InvalidOperationException("Sign in to view this item.");
+            var itemId = JsonLong(record.Data, isEvent ? "event_id" : "discussion_id", "id");
+            if (itemId <= 0) throw new InvalidOperationException("Schoology did not return a valid item ID.");
+            using var detailDocument = isEvent ? await _api.GetEventAsync(session, kind, entityId, itemId)
+                : await _api.GetDiscussionAsync(session, kind, entityId, itemId);
+            var data = detailDocument.RootElement;
+            var key = isEvent ? "event" : "discussion";
+            if (data.ValueKind == JsonValueKind.Object && data.TryGetProperty(key, out var nested)) data = nested;
+            var title = ProfileValue(data, "title", "name") ?? record.Title;
+            var description = ProfileValue(data, "description", "body", "message", "description_richtext");
+            var date = ProfileValue(data, "start", "start_time", "date", "due", "due_date");
+            IReadOnlyList<SchoologyApiRecord> comments = [];
+            string? commentsError = null;
+            try
+            {
+                using var commentsDocument = isEvent ? await _api.GetEventCommentsAsync(session, kind, entityId, itemId)
+                    : await _api.GetDiscussionCommentsAsync(session, kind, entityId, itemId);
+                comments = SchoologyApiClient.ReadRecords(commentsDocument.RootElement, "comment", "comments");
+                await ResolveCommentAuthorsAsync(comments, session);
+            }
+            catch (Exception ex) { commentsError = ex.Message; }
+            UIElement BuildInfo()
+            {
+                var info = new StackPanel { Spacing = 10, Margin = new Thickness(12) };
+                info.Children.Add(Text(title, 20, true));
+                if (!string.IsNullOrWhiteSpace(date)) AddProfileField(info, isEvent ? "When" : "Due date", date);
+                if (!string.IsNullOrWhiteSpace(description)) info.Children.Add(Text(StripMarkup(description), 14));
+                if (info.Children.Count == 1) info.Children.Add(EmptyState("No additional information was provided."));
+                return new ScrollViewer { Content = info, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+            }
+            UIElement BuildComments()
+            {
+                var panel = new StackPanel { Spacing = 8, Margin = new Thickness(8) };
+                if (commentsError is not null) panel.Children.Add(EmptyState("Unable to load comments.", commentsError));
+                else if (comments.Count == 0) panel.Children.Add(EmptyState("No comments yet."));
+                else foreach (var comment in comments) panel.Children.Add(BuildCommentRow(comment, itemId));
+                return new ScrollViewer { Content = panel, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+            }
+            var header = new Grid { ColumnSpacing = 12, Margin = new Thickness(16, 10, 16, 4) };
+            header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            header.Children.Add(Action("‹ Back", (_, _) => ReturnFromAssignment(entityId)));
+            var heading = Text(title, 21, true); Grid.SetColumn(heading, 1); header.Children.Add(heading);
+            var page = new Grid { RowSpacing = 8, Margin = new Thickness(12) };
+            page.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            page.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            page.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+            page.Children.Add(header);
+            var selector = new SelectorBar { HorizontalAlignment = HorizontalAlignment.Stretch };
+            var infoItem = new SelectorBarItem { Text = "Info" };
+            var commentsItem = new SelectorBarItem { Text = isEvent ? "Comments" : "Discussion" };
+            selector.Items.Add(infoItem); selector.Items.Add(commentsItem);
+            Grid.SetRow(selector, 1); page.Children.Add(selector);
+            var frame = new Frame { Background = new SolidColorBrush(Colors.Transparent) };
+            Grid.SetRow(frame, 2); page.Children.Add(frame);
+            void Select(SelectorBarItem item) => frame.Content = item == commentsItem ? BuildComments() : BuildInfo();
+            selector.SelectionChanged += (_, _) => { if (selector.SelectedItem is SelectorBarItem item) Select(item); };
+            selector.SelectedItem = infoItem; Select(infoItem);
+            SetTitleBarCreateContext(string.Empty);
+            if (_sectionFrame is not null) NavigateMainSection(page, title); else Reset(BuildApplicationShell(title, page));
+        }
+        catch (Exception ex) { await ShowApiErrorAsync(isEvent ? "Unable to load event" : "Unable to load discussion", ex.Message); }
+    }
+
     private void ReturnFromAssignment(long sectionId)
     {
         if (_page == "Courses")
@@ -3271,7 +3409,7 @@ public sealed partial class MainWindow : Window
                     var row = new Grid { ColumnSpacing = 12, Padding = new Thickness(10, 12, 10, 12) };
                     row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(32) });
                     row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-                    row.Children.Add(new SymbolIcon(Symbol.Page) { Foreground = ThemeBrush("SchoologyBlueBrush"), Width = 26 });
+                    row.Children.Add(new SymbolIcon(Symbol.Edit) { Foreground = ThemeBrush("SchoologyBlueBrush"), Width = 26 });
                     var labels = new StackPanel { Spacing = 3 };
                     labels.Children.Add(Text(assignmentRecord.Title, 14, true));
                     var due = ProfileValue(assignmentRecord.Data, "due", "due_date", "dueDate");
@@ -3324,24 +3462,33 @@ public sealed partial class MainWindow : Window
                 }
                 return;
             }
-            var list = new ListView { SelectionMode = ListViewSelectionMode.None, HorizontalContentAlignment = HorizontalAlignment.Stretch, MaxHeight = 680 };
+            var list = new ListView { SelectionMode = ListViewSelectionMode.None, IsItemClickEnabled = false,
+                HorizontalContentAlignment = HorizontalAlignment.Stretch, VerticalAlignment = VerticalAlignment.Stretch,
+                Background = new SolidColorBrush(Colors.Transparent) };
             AutomationProperties.SetAutomationId(list, $"{kind}{tab}List");
             foreach (var record in records)
             {
-                var row = new Grid { ColumnSpacing = 12, Padding = new Thickness(8, 9, 8, 9) };
-                row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+                var row = new Grid { ColumnSpacing = 12, Padding = new Thickness(10, 10, 10, 10) };
+                row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(36) });
                 row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-                if (tab == "Materials" && IsFolderRecord(record.Data))
-                {
-                    row.Children.Add(FolderIcons.CreateIcon(FolderColorName(record.Data), 32));
-                }
-                else row.Children.Add(new FontIcon { Glyph = tab == "Materials" ? MaterialGlyph(record.Data) : "\uE8A5",
-                    FontSize = 22, Foreground = ThemeBrush("SchoologyBlueBrush"), Width = 32 });
+                var type = (ProfileValue(record.Data, "type", "template_type", "document_type") ?? "").ToLowerInvariant();
+                var glyph = tab == "Discussions" || type == "discussion" ? "\uE8BD" :
+                    type == "event" ? "\uE787" : type == "assignment" ? "\uE70F" :
+                    tab == "Materials" ? MaterialGlyph(record.Data) : "\uE8A5";
+                UIElement rowIcon = tab == "Materials" && IsFolderRecord(record.Data)
+                    ? FolderIcons.CreateIcon(FolderColorName(record.Data), 32)
+                    : new FontIcon { Glyph = glyph, FontSize = 22, Foreground = ThemeBrush("SchoologyBlueBrush") };
+                row.Children.Add(rowIcon);
                 var labels = new StackPanel { Spacing = 3 };
                 labels.Children.Add(Text(record.Title, 14, true));
                 if (!string.IsNullOrWhiteSpace(record.Subtitle)) labels.Children.Add(Text(record.Subtitle, 12));
+                var date = ProfileValue(record.Data, "due", "due_date", "start", "start_time", "date");
+                if (!string.IsNullOrWhiteSpace(date)) labels.Children.Add(Text(date, 11));
                 Grid.SetColumn(labels, 1); row.Children.Add(labels);
-                list.Items.Add(new ListViewItem { Content = row });
+                var item = new ListViewItem { Content = row, Tag = record, HorizontalContentAlignment = HorizontalAlignment.Stretch };
+                if (tab == "Discussions") item.Tapped += async (_, _) => await ShowDiscussionDetailsAsync(kind, entityId, record);
+                else if (tab == "Events" || type == "event") item.Tapped += async (_, _) => await ShowEventDetailsAsync(kind, entityId, record);
+                list.Items.Add(item);
             }
             body.Children.Add(list);
         }
@@ -3538,10 +3685,9 @@ public sealed partial class MainWindow : Window
         filters.Items.Add(all); filters.Items.Add(members); filters.Items.Add(admins); filters.SelectedItem = all;
         var search = new TextBox { PlaceholderText = $"Search {kind.ToLowerInvariant()} members" };
         var list = new ListView { SelectionMode = ListViewSelectionMode.None,
-            HorizontalContentAlignment = HorizontalAlignment.Stretch, VerticalAlignment = VerticalAlignment.Stretch };
-        list.MaxHeight = Math.Max(220, (_root.ActualHeight > 0 ? _root.ActualHeight : 820) - 320);
-        SizeChangedEventHandler memberListResize = (_, args) =>
-            list.MaxHeight = Math.Max(220, args.NewSize.Height - 320);
+            HorizontalContentAlignment = HorizontalAlignment.Stretch, VerticalAlignment = VerticalAlignment.Stretch,
+            Height = Math.Max(300, (_root.ActualHeight > 0 ? _root.ActualHeight : 820) - 190) };
+        SizeChangedEventHandler memberListResize = (_, args) => list.Height = Math.Max(300, args.NewSize.Height - 190);
         _root.SizeChanged += memberListResize;
         root.Unloaded += (_, _) => _root.SizeChanged -= memberListResize;
         AutomationProperties.SetAutomationId(list, kind + "MembersList");
@@ -3689,7 +3835,7 @@ public sealed partial class MainWindow : Window
             Background = ThemeBrush("SchoologySubtleBrush"), Clip = null, Child = image };
     }
 
-    private Border BuildCommentRow(SchoologyApiRecord comment)
+    private Border BuildCommentRow(SchoologyApiRecord comment, long parentEntityId = 0)
     {
         var data = comment.Data;
         var user = data.ValueKind == JsonValueKind.Object && data.TryGetProperty("user", out var nested)
@@ -3697,7 +3843,10 @@ public sealed partial class MainWindow : Window
         var authorId = JsonLong(data, "uid", "user_id", "userId", "author_id", "authorId");
         if (authorId <= 0) authorId = JsonLong(user, "id", "uid", "user_id");
         var author = ProfileValue(user, "name_display", "display_name", "name", "user_name") ??
-            ProfileValue(data, "user_name", "author_name", "name_display", "display_name") ?? comment.Title;
+            ProfileValue(data, "user_name", "author_name", "name_display", "display_name") ??
+            (authorId > 0 && _userProfileCache.TryGetValue(authorId, out var cachedAuthor)
+                ? ProfileValue(cachedAuthor, "name_display", "display_name", "name", "user_name") : null) ??
+            (authorId > 0 ? "Schoology user" : "Unknown author");
         var row = new Grid { ColumnSpacing = 10, Padding = new Thickness(10, 8, 10, 8) };
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(38) });
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -3714,6 +3863,46 @@ public sealed partial class MainWindow : Window
         }
         var body = StripMarkup(ProfileValue(data, "comment", "body", "text", "message") ?? comment.Subtitle);
         if (!string.IsNullOrWhiteSpace(body)) details.Children.Add(Text(body, 12));
+        var commentId = JsonLong(data, "id", "comment_id", "commentId");
+        if (parentEntityId > 0 && commentId > 0)
+        {
+            var liked = JsonBoolean(data, "user_like_action", "user_liked", "userLiked", "liked", "is_liked", "isLiked");
+            var likes = JsonLong(data, "likes", "like_count", "likeCount");
+            var likeSplit = new SplitButton
+            {
+                Content = liked ? "Unlike" : "Like",
+                Padding = new Thickness(8, 4, 8, 4),
+                HorizontalAlignment = HorizontalAlignment.Left,
+                Background = ThemeBrush("SchoologySubtleBrush"),
+                BorderBrush = ThemeBrush("SchoologyDividerBrush")
+            };
+            var likeMenu = new MenuFlyout();
+            var countItem = new MenuFlyoutItem
+            {
+                Text = likes > 0 ? $"View {likes} likes" : "No likes yet",
+                IsEnabled = likes > 0
+            };
+            countItem.Click += async (_, _) => await ShowCommentLikesDialogAsync(parentEntityId, commentId);
+            likeMenu.Items.Add(countItem);
+            likeSplit.Flyout = likeMenu;
+            likeSplit.PrimaryButtonClick += async (_, _) =>
+            {
+                if (_session is null) return;
+                likeSplit.IsEnabled = false;
+                try
+                {
+                    using var result = await _api.SetCommentLikeAsync(_session, parentEntityId, commentId, !liked);
+                    liked = !liked;
+                    likes = Math.Max(0, likes + (liked ? 1 : -1));
+                    likeSplit.Content = liked ? "Unlike" : "Like";
+                    countItem.Text = likes > 0 ? $"View {likes} likes" : "No likes yet";
+                    countItem.IsEnabled = likes > 0;
+                }
+                catch (Exception ex) { await ShowApiErrorAsync("Unable to update comment like", ex.Message); }
+                finally { likeSplit.IsEnabled = true; }
+            };
+            details.Children.Add(likeSplit);
+        }
         Grid.SetColumn(details, 1);
         row.Children.Add(details);
         return Surface(row, new Thickness(0));
@@ -3742,6 +3931,9 @@ public sealed partial class MainWindow : Window
         if (type.Contains("audio")) return "\uE8D6";
         if (type.Contains("link") || type.Contains("url")) return "\uE71B";
         if (type.Contains("spreadsheet") || type.Contains("xls")) return "\uE9F9";
+        if (type.Contains("assignment")) return "\uE70F";
+        if (type.Contains("discussion")) return "\uE8BD";
+        if (type.Contains("event")) return "\uE787";
         return "\uE8A5";
     }
 
@@ -3968,85 +4160,54 @@ public sealed partial class MainWindow : Window
         var commentCount = JsonLong(update.Data, "num_comments", "comment_count", "comments_count", "commentCount");
         var likeCount = JsonLong(update.Data, "likes", "like_count", "likes_count", "likeCount");
         var liked = JsonBoolean(update.Data, "user_like_action", "user_liked", "userLiked", "liked", "is_liked");
-        var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
-
-        Button commentCountButton = null!;
-        Button likeCountButton = null!;
+        var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         StackPanel previewPanel = new() { Spacing = 6, Visibility = Visibility.Collapsed };
         Button viewMoreButton = null!;
-
-        var commentButton = Action("Comment", async (_, _) =>
+        var commentSplit = new SplitButton { Content = "Comment", Padding = new Thickness(12, 7, 12, 7),
+            Background = ThemeBrush("SchoologySubtleBrush"), BorderBrush = ThemeBrush("SchoologyDividerBrush") };
+        var commentMenu = new MenuFlyout();
+        var commentCountItem = new MenuFlyoutItem { Text = commentCount > 0 ? $"View {commentCount} comments" : "No comments yet", IsEnabled = commentCount > 0 };
+        commentCountItem.Click += async (_, _) => await ShowUpdateCommentsDialogAsync(commentRealm, commentRealmId, updateId);
+        commentMenu.Items.Add(commentCountItem); commentSplit.Flyout = commentMenu;
+        commentSplit.PrimaryButtonClick += async (_, _) =>
         {
             if (updateId <= 0 || commentRealmId <= 0 || _session is null) return;
             await ShowUpdateCommentComposerAsync(commentRealm, commentRealmId, updateId, () =>
             {
-                commentCount++;
-                commentCountButton.Content = commentCount.ToString(System.Globalization.CultureInfo.CurrentCulture);
-                commentCountButton.Visibility = Visibility.Visible;
-                if (commentCountButton.Tag is Border divider) divider.Visibility = Visibility.Visible;
+                commentCount++; commentCountItem.Text = $"View {commentCount} comments"; commentCountItem.IsEnabled = true;
                 _ = LoadRecentPostCommentsAsync(commentRealm, commentRealmId, updateId, previewPanel, viewMoreButton);
             });
-        });
-        AutomationProperties.SetAutomationId(commentButton, $"UpdateComment_{updateId}");
-
-        commentCountButton = Action(commentCount.ToString(System.Globalization.CultureInfo.CurrentCulture),
-            async (_, _) => await ShowUpdateCommentsDialogAsync(commentRealm, commentRealmId, updateId, () =>
-            {
-                commentCount++;
-                commentCountButton.Content = commentCount.ToString(System.Globalization.CultureInfo.CurrentCulture);
-                commentCountButton.Visibility = Visibility.Visible;
-                AutomationProperties.SetName(commentCountButton, $"{commentCount} comments");
-                if (commentCountButton.Tag is Border divider) divider.Visibility = Visibility.Visible;
-                _ = LoadRecentPostCommentsAsync(commentRealm, commentRealmId, updateId, previewPanel, viewMoreButton);
-            }));
-        commentCountButton.Visibility = commentCount > 0 ? Visibility.Visible : Visibility.Collapsed;
-        AutomationProperties.SetName(commentCountButton, $"{commentCount} comments");
-        AutomationProperties.SetAutomationId(commentCountButton, $"UpdateCommentCount_{updateId}");
-        if (commentRealmId <= 0 || updateId <= 0)
-        {
-            commentButton.IsEnabled = false;
-            commentCountButton.IsEnabled = false;
-        }
-
-        Button likeButton = null!;
-        likeButton = Action(liked ? "Unlike" : "Like", async (_, _) =>
+        };
+        AutomationProperties.SetAutomationId(commentSplit, $"UpdateComment_{updateId}");
+        var likeSplit = new SplitButton { Content = liked ? "Unlike" : "Like", Padding = new Thickness(12, 7, 12, 7),
+            Background = ThemeBrush("SchoologySubtleBrush"), BorderBrush = ThemeBrush("SchoologyDividerBrush") };
+        var likeMenu = new MenuFlyout();
+        var likeCountItem = new MenuFlyoutItem { Text = likeCount > 0 ? $"View {likeCount} likes" : "No likes yet", IsEnabled = likeCount > 0 };
+        likeCountItem.Click += async (_, _) => await ShowUpdateLikesDialogAsync(updateId);
+        likeMenu.Items.Add(likeCountItem); likeSplit.Flyout = likeMenu;
+        likeSplit.PrimaryButtonClick += async (_, _) =>
         {
             if (updateId <= 0 || _session is null) return;
-            likeButton.IsEnabled = false;
+            likeSplit.IsEnabled = false;
             try
             {
                 using var result = await _api.SetUpdateLikeAsync(_session, updateId, !liked);
-                liked = !liked;
-                likeCount = Math.Max(0, likeCount + (liked ? 1 : -1));
-                likeButton.Content = liked ? "Unlike" : "Like";
-                likeCountButton.Content = likeCount.ToString(System.Globalization.CultureInfo.CurrentCulture);
-                likeCountButton.Visibility = likeCount > 0 ? Visibility.Visible : Visibility.Collapsed;
-                if (likeCountButton.Tag is Border divider) divider.Visibility = likeCountButton.Visibility;
-                AutomationProperties.SetName(likeCountButton, $"{likeCount} likes");
+                liked = !liked; likeCount = Math.Max(0, likeCount + (liked ? 1 : -1));
+                likeSplit.Content = liked ? "Unlike" : "Like";
+                likeCountItem.Text = likeCount > 0 ? $"View {likeCount} likes" : "No likes yet"; likeCountItem.IsEnabled = likeCount > 0;
             }
             catch (Exception ex) { await ShowApiErrorAsync("Unable to update like", ex.Message); }
-            finally { likeButton.IsEnabled = true; }
-        });
-        AutomationProperties.SetAutomationId(likeButton, $"UpdateLike_{updateId}");
-
-        likeCountButton = Action(likeCount.ToString(System.Globalization.CultureInfo.CurrentCulture),
-            async (_, _) => await ShowUpdateLikesDialogAsync(updateId));
-        likeCountButton.Visibility = likeCount > 0 ? Visibility.Visible : Visibility.Collapsed;
-        AutomationProperties.SetName(likeCountButton, $"{likeCount} likes");
-        AutomationProperties.SetAutomationId(likeCountButton, $"UpdateLikeCount_{updateId}");
-
-        actions.Children.Add(ConnectedButtons(commentButton, commentCountButton));
-        actions.Children.Add(ConnectedButtons(likeButton, likeCountButton));
-        card.Children.Add(actions);
+            finally { likeSplit.IsEnabled = true; }
+        };
+        AutomationProperties.SetAutomationId(likeSplit, $"UpdateLike_{updateId}");
+        actions.Children.Add(commentSplit); actions.Children.Add(likeSplit); card.Children.Add(actions);
 
         viewMoreButton = Action("View more comments", async (_, _) =>
             await ShowUpdateCommentsDialogAsync(commentRealm, commentRealmId, updateId, () =>
             {
                 commentCount++;
-                commentCountButton.Content = commentCount.ToString(System.Globalization.CultureInfo.CurrentCulture);
-                commentCountButton.Visibility = Visibility.Visible;
-                AutomationProperties.SetName(commentCountButton, $"{commentCount} comments");
-                if (commentCountButton.Tag is Border divider) divider.Visibility = Visibility.Visible;
+                commentCountItem.Text = $"View {commentCount} comments";
+                commentCountItem.IsEnabled = true;
                 _ = LoadRecentPostCommentsAsync(commentRealm, commentRealmId, updateId, previewPanel, viewMoreButton);
             }));
         viewMoreButton.HorizontalAlignment = HorizontalAlignment.Left;
@@ -4070,10 +4231,8 @@ public sealed partial class MainWindow : Window
             list.Children.Clear();
             using var document = await _api.GetUpdateCommentsAsync(_session, kind, entityId, updateId);
             var comments = SchoologyApiClient.ReadRecords(document.RootElement, "comment", "comments");
-            foreach (var comment in comments)
-            {
-                list.Children.Add(BuildCommentRow(comment));
-            }
+            await ResolveCommentAuthorsAsync(comments, _session);
+            foreach (var comment in comments) list.Children.Add(BuildCommentRow(comment, updateId));
             status.Text = comments.Count == 0 ? "No comments yet. Be the first to comment." : $"{comments.Count} comments";
         }
         catch (Exception ex)
@@ -4130,6 +4289,7 @@ public sealed partial class MainWindow : Window
 
             using var document = await _api.GetUpdateCommentsAsync(_session, kind, entityId, updateId);
             var comments = SchoologyApiClient.ReadRecords(document.RootElement, "comment", "comments");
+            await ResolveCommentAuthorsAsync(comments, _session);
             preview.Children.Clear();
             if (comments.Count == 0)
             {
@@ -4139,7 +4299,7 @@ public sealed partial class MainWindow : Window
 
             foreach (var comment in comments.TakeLast(2))
             {
-                preview.Children.Add(BuildCommentRow(comment));
+                preview.Children.Add(BuildCommentRow(comment, updateId));
             }
 
             if (comments.Count > 2)
@@ -4218,10 +4378,11 @@ public sealed partial class MainWindow : Window
         {
             using var document = await _api.GetUpdateCommentsAsync(_session, kind, entityId, updateId);
             var comments = SchoologyApiClient.ReadRecords(document.RootElement, "comment", "comments");
+            await ResolveCommentAuthorsAsync(comments, _session);
             content.Children.Clear();
             if (comments.Count == 0) content.Children.Add(Text("No comments yet.", 13));
             foreach (var comment in comments)
-                content.Children.Add(BuildCommentRow(comment));
+                content.Children.Add(BuildCommentRow(comment, updateId));
             dialog.Title = comments.Count == 0 ? "Comments" : $"Comments ({comments.Count})";
         }
         catch (Exception ex)
@@ -4233,6 +4394,37 @@ public sealed partial class MainWindow : Window
         var result = await dialog.ShowAsync();
         if (result == ContentDialogResult.Primary)
             await ShowUpdateCommentComposerAsync(kind, entityId, updateId, onPosted);
+    }
+
+    private async Task ShowCommentLikesDialogAsync(long entityId, long commentId)
+    {
+        if (_session is null || entityId <= 0 || commentId <= 0) return;
+        try
+        {
+            using var document = await _api.GetCommentLikesAsync(_session, entityId, commentId);
+            var users = SchoologyApiClient.ReadRecords(document.RootElement, "user", "users", "like", "likes");
+            var content = new StackPanel { Spacing = 8 };
+            if (users.Count == 0) content.Children.Add(Text("No likes were returned.", 13));
+            foreach (var person in users)
+            {
+                var data = person.Data;
+                var user = data.ValueKind == JsonValueKind.Object && data.TryGetProperty("user", out var nested) ? nested : data;
+                var id = JsonLong(data, "uid", "user_id", "userId", "id");
+                if (id <= 0) id = JsonLong(user, "id", "uid", "user_id");
+                var name = ProfileValue(user, "name_display", "display_name", "name", "user_name") ??
+                    ProfileValue(data, "name_display", "display_name", "name", "user_name") ?? "Schoology user";
+                var row = new Grid { ColumnSpacing = 10, Padding = new Thickness(8, 6, 8, 6) };
+                row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(38) });
+                row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+                row.Children.Add(BuildProfileAvatar(data, id));
+                var label = Text(name, 13, true); Grid.SetColumn(label, 1); row.Children.Add(label);
+                content.Children.Add(Surface(row, new Thickness(0)));
+            }
+            await new ContentDialog { Title = users.Count == 1 ? "1 like" : $"{users.Count} likes",
+                Content = new ScrollViewer { Content = content, MaxHeight = 480, VerticalScrollBarVisibility = ScrollBarVisibility.Auto },
+                CloseButtonText = "Close", XamlRoot = _root.XamlRoot }.ShowAsync();
+        }
+        catch (Exception ex) { await ShowApiErrorAsync("Unable to load comment likes", ex.Message); }
     }
 
     private async Task ShowUpdateLikesDialogAsync(long updateId)
@@ -5079,6 +5271,24 @@ public sealed partial class MainWindow : Window
         var session = _session;
         var context = _titleBarCreateContext;
         if (session is null || context.Length == 0) return;
+        if (context == "home")
+        {
+            var menu = new MenuFlyout();
+            if (_courses.Count + _groups.Count > 0)
+            {
+                var update = new MenuFlyoutItem { Text = "Update", Icon = new SymbolIcon(Symbol.Edit) };
+                update.Click += async (_, _) => await ShowCreateUpdateDialogCoreAsync();
+                menu.Items.Add(update);
+            }
+            var discussion = new MenuFlyoutItem { Text = "Discussion", Icon = new SymbolIcon(Symbol.Message) };
+            discussion.Click += async (_, _) => await ShowCreateDiscussionOrEventDialogAsync(false);
+            menu.Items.Add(discussion);
+            var calendarEvent = new MenuFlyoutItem { Text = "Event", Icon = new SymbolIcon(Symbol.Calendar) };
+            calendarEvent.Click += async (_, _) => await ShowCreateDiscussionOrEventDialogAsync(true);
+            menu.Items.Add(calendarEvent);
+            if (_titleBarCreateButton is not null) menu.ShowAt(_titleBarCreateButton);
+            return;
+        }
         var kind = context == "course-update" ? "Courses" : context == "group-update" ? "Groups" : string.Empty;
         var destinations = new List<(string Kind, SchoologyEntity Entity)>();
         if (context == "home")
