@@ -122,6 +122,17 @@ internal sealed class SchoologyApiClient
         CancellationToken cancellationToken = default) =>
         _auth.GetApiJsonAsync(session, $"like/{updateId}", null, cancellationToken);
 
+    // Official Android ROPollVote posts the option ID and selection state to poll/{update_id}/vote.
+    internal Task<JsonDocument> VotePollAsync(
+        SchoologyAuthService.Session session, long updateId, long optionId, bool select,
+        CancellationToken cancellationToken = default) =>
+        _auth.SendApiFormAsync(session, HttpMethod.Post, $"poll/{updateId}/vote",
+            new Dictionary<string, string>
+            {
+                ["id"] = optionId.ToString(CultureInfo.InvariantCulture),
+                ["select"] = select ? "true" : "false"
+            }, cancellationToken);
+
     internal Task<JsonDocument> SetUpdateLikeAsync(
         SchoologyAuthService.Session session, long updateId, bool like,
         CancellationToken cancellationToken = default) =>

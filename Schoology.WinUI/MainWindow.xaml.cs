@@ -3088,7 +3088,7 @@ public sealed partial class MainWindow : Window
     {
         var panel = new StackPanel { Spacing = 8 };
         var breadcrumb = Text("Materials", 13, true);
-        var history = new Stack<(SchoologyApiRecord[] Records, string Title)>();
+        var history = new Stack<(SchoologyApiRecord[] Records, string Title, long FolderId)>();
         IReadOnlyList<SchoologyApiRecord> current = initialRecords;
         // Create the list before the Back handler captures Render/list.
         var list = new ListView { SelectionMode = ListViewSelectionMode.Single, IsItemClickEnabled = false,
@@ -3098,9 +3098,18 @@ public sealed partial class MainWindow : Window
         back = Action("‹ Back to course materials", (_, _) =>
         {
             if (history.Count == 0) return;
+            var reverseAnimation = AnimationsEnabled
+                ? ConnectedAnimationService.GetForCurrentView().PrepareToAnimate("CourseMaterialFolder", breadcrumb)
+                : null;
             var previous = history.Pop();
             Render(previous.Records);
             breadcrumb.Text = previous.Title;
+            var targetItem = list.Items.OfType<ListViewItem>().FirstOrDefault(candidate =>
+                candidate.Tag is SchoologyApiRecord parentRecord &&
+                JsonLong(parentRecord.Data, "id", "folder_id", "folderId") == previous.FolderId);
+            if (targetItem?.Content is Grid targetRow && targetRow.Children.Count > 0)
+                reverseAnimation?.TryStart(targetRow.Children[0]);
+            else reverseAnimation?.TryStart(list);
             back.IsEnabled = history.Count > 0;
             back.Visibility = history.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
         });
@@ -3133,7 +3142,7 @@ public sealed partial class MainWindow : Window
                 Grid.SetColumn(labels, 1); row.Children.Add(labels);
                 var item = new ListViewItem { Content = row, Tag = record,
                     HorizontalContentAlignment = HorizontalAlignment.Stretch };
-                item.Tapped += async (_, _) => await OpenFolderAsync(record);
+                item.Tapped += async (_, _) => await OpenFolderAsync(record, item);
                 list.Items.Add(item);
             }
         }
@@ -3214,7 +3223,7 @@ public sealed partial class MainWindow : Window
                 CloseButtonText = "Close", XamlRoot = _root.XamlRoot }.ShowAsync();
         }
 
-        async Task OpenFolderAsync(SchoologyApiRecord record)
+        async Task OpenFolderAsync(SchoologyApiRecord record, ListViewItem sourceItem)
         {
             if (!string.Equals(ProfileValue(record.Data, "type", "document_type", "documentType"), "folder", StringComparison.OrdinalIgnoreCase))
             {
@@ -3225,13 +3234,17 @@ public sealed partial class MainWindow : Window
             if (folderId <= 0 || _session is null) return;
             try
             {
+                var connectedAnimation = AnimationsEnabled
+                    ? ConnectedAnimationService.GetForCurrentView().PrepareToAnimate("CourseMaterialFolder", sourceItem)
+                    : null;
                 using var folder = await _api.GetCourseFolderAsync(_session, sectionId, folderId);
                 var records = SchoologyApiClient.ReadRecords(folder.RootElement, "folder-item", "folder_item", "folderItems", "items");
-                history.Push((current.ToArray(), breadcrumb.Text));
+                history.Push((current.ToArray(), breadcrumb.Text, folderId));
                 breadcrumb.Text = ProfileValue(record.Data, "title", "name") ?? record.Title;
                 back.IsEnabled = true;
                 back.Visibility = Visibility.Visible;
                 Render(records);
+                connectedAnimation?.TryStart(breadcrumb);
                 if (records.Count == 0) list.Items.Add(new ListViewItem { Content = Text("This folder is empty.", 13) });
             }
             catch (Exception ex) { await ShowApiErrorAsync("Unable to open folder", ex.Message); }
@@ -3270,7 +3283,13 @@ public sealed partial class MainWindow : Window
         var admins = new SelectorBarItem { Text = "Admins" };
         filters.Items.Add(all); filters.Items.Add(members); filters.Items.Add(admins); filters.SelectedItem = all;
         var search = new TextBox { PlaceholderText = $"Search {kind.ToLowerInvariant()} members" };
-        var list = new ListView { SelectionMode = ListViewSelectionMode.None, HorizontalContentAlignment = HorizontalAlignment.Stretch, MaxHeight = 680 };
+        var list = new ListView { SelectionMode = ListViewSelectionMode.None,
+            HorizontalContentAlignment = HorizontalAlignment.Stretch, VerticalAlignment = VerticalAlignment.Stretch };
+        list.MaxHeight = Math.Max(220, (_root.ActualHeight > 0 ? _root.ActualHeight : 820) - 320);
+        SizeChangedEventHandler memberListResize = (_, args) =>
+            list.MaxHeight = Math.Max(220, args.NewSize.Height - 320);
+        _root.SizeChanged += memberListResize;
+        root.Unloaded += (_, _) => _root.SizeChanged -= memberListResize;
         AutomationProperties.SetAutomationId(list, kind + "MembersList");
         void Render()
         {
@@ -3369,6 +3388,55 @@ public sealed partial class MainWindow : Window
                 image.Source = new BitmapImage(new Uri(NormalizeSchoologyImageUrl(picture)));
         }
         catch { }
+    }
+
+    private Border BuildProfileAvatar(JsonElement data, long userId, double size = 38)
+    {
+        var profile = data.ValueKind == JsonValueKind.Object && data.TryGetProperty("user", out var nested)
+            ? nested : data;
+        var picture = ProfileValue(profile, "picture_url", "pictureUrl", "picture", "photo_url", "avatar_url") ??
+            ProfileValue(data, "picture_url", "pictureUrl", "picture", "photo_url", "avatar_url");
+        var image = new Image { Width = size, Height = size,
+            Stretch = Microsoft.UI.Xaml.Media.Stretch.UniformToFill };
+        if (!string.IsNullOrWhiteSpace(picture))
+        {
+            try { image.Source = new BitmapImage(new Uri(NormalizeSchoologyImageUrl(picture))); }
+            catch { if (userId > 0) _ = LoadMemberAvatarAsync(userId, image); }
+        }
+        else if (userId > 0) _ = LoadMemberAvatarAsync(userId, image);
+        else image.Source = null;
+        return new Border { Width = size, Height = size, CornerRadius = new CornerRadius(size / 2),
+            Background = ThemeBrush("SchoologySubtleBrush"), Clip = null, Child = image };
+    }
+
+    private Border BuildCommentRow(SchoologyApiRecord comment)
+    {
+        var data = comment.Data;
+        var user = data.ValueKind == JsonValueKind.Object && data.TryGetProperty("user", out var nested)
+            ? nested : data;
+        var authorId = JsonLong(data, "uid", "user_id", "userId", "author_id", "authorId");
+        if (authorId <= 0) authorId = JsonLong(user, "id", "uid", "user_id");
+        var author = ProfileValue(user, "name_display", "display_name", "name", "user_name") ??
+            ProfileValue(data, "user_name", "author_name", "name_display", "display_name") ?? comment.Title;
+        var row = new Grid { ColumnSpacing = 10, Padding = new Thickness(10, 8, 10, 8) };
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(38) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        row.Children.Add(BuildProfileAvatar(data, authorId));
+        var details = new StackPanel { Spacing = 3 };
+        details.Children.Add(Text(author, 12, true));
+        var created = ProfileValue(data, "created", "created_at", "timestamp");
+        if (!string.IsNullOrWhiteSpace(created))
+        {
+            var date = Text(ParseSchoologyDate(created)?.ToString("g",
+                System.Globalization.CultureInfo.CurrentCulture) ?? created, 10);
+            date.Foreground = ThemeBrush("SchoologyMutedTextBrush");
+            details.Children.Add(date);
+        }
+        var body = StripMarkup(ProfileValue(data, "comment", "body", "text", "message") ?? comment.Subtitle);
+        if (!string.IsNullOrWhiteSpace(body)) details.Children.Add(Text(body, 12));
+        Grid.SetColumn(details, 1);
+        row.Children.Add(details);
+        return Surface(row, new Thickness(0));
     }
 
     private static bool IsFolderRecord(JsonElement data)
@@ -3498,15 +3566,67 @@ public sealed partial class MainWindow : Window
                     foreach (var key in new[] { "options", "pollOptionsList", "poll_options", "pollOptions" })
                         if (poll.TryGetProperty(key, out var nested)) { options = nested; break; }
                 if (options.ValueKind == JsonValueKind.Array)
-                    foreach (var option in options.EnumerateArray())
+                {
+                    var pollList = new ListView
                     {
-                        var optionTitle = ProfileValue(option, "title", "name", "text") ?? "Poll option";
-                        var votes = ProfileValue(option, "count", "votes", "vote_count", "voteCount", "total_votes") ?? "0";
-                        var optionRow = new StackPanel { Spacing = 2 };
-                        optionRow.Children.Add(Text(optionTitle, 13, true));
-                        optionRow.Children.Add(Text($"{votes} votes", 11));
-                        pollPanel.Children.Add(Surface(optionRow, new Thickness(8)));
+                        SelectionMode = ListViewSelectionMode.Single,
+                        IsItemClickEnabled = true,
+                        MaxHeight = 360,
+                        HorizontalContentAlignment = HorizontalAlignment.Stretch,
+                        Background = new SolidColorBrush(Colors.Transparent)
+                    };
+                    AutomationProperties.SetName(pollList, "Poll options");
+                    void RenderPollOptions(JsonElement pollOptions)
+                    {
+                        pollList.Items.Clear();
+                        if (pollOptions.ValueKind != JsonValueKind.Array) return;
+                        foreach (var option in pollOptions.EnumerateArray())
+                        {
+                            var optionId = JsonLong(option, "id", "poll_option_id", "pollOptionId");
+                            var selected = JsonBoolean(option, "selected");
+                            var optionTitle = ProfileValue(option, "title", "name", "text") ?? "Poll option";
+                            var votes = ProfileValue(option, "count", "votes", "vote_count", "voteCount", "total_votes") ?? "0";
+                            var optionRow = new Grid { ColumnSpacing = 10, Padding = new Thickness(8, 7, 8, 7) };
+                            optionRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+                            optionRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+                            optionRow.Children.Add(new RadioButton { IsChecked = selected, IsHitTestVisible = false,
+                                VerticalAlignment = VerticalAlignment.Center });
+                            var labels = new StackPanel { Spacing = 2, VerticalAlignment = VerticalAlignment.Center };
+                            labels.Children.Add(Text(optionTitle, 13, true));
+                            labels.Children.Add(Text($"{votes} votes", 11));
+                            Grid.SetColumn(labels, 1);
+                            optionRow.Children.Add(labels);
+                            var item = new ListViewItem { Content = optionRow, Tag = optionId, IsEnabled = optionId > 0,
+                                HorizontalContentAlignment = HorizontalAlignment.Stretch };
+                            item.Tapped += async (_, _) =>
+                            {
+                                if (_session is null || updateId <= 0 || optionId <= 0) return;
+                                item.IsEnabled = false;
+                                try
+                                {
+                                    using var vote = await _api.VotePollAsync(_session, updateId, optionId, !selected);
+                                    var updated = vote.RootElement;
+                                    if (updated.ValueKind == JsonValueKind.Object &&
+                                        updated.TryGetProperty("pollUpdateModel", out var model)) updated = model;
+                                    if (updated.ValueKind == JsonValueKind.Object)
+                                        foreach (var key in new[] { "options", "pollOptionsList", "poll_options", "pollOptions" })
+                                            if (updated.TryGetProperty(key, out var updatedOptions) &&
+                                                updatedOptions.ValueKind == JsonValueKind.Array)
+                                            {
+                                                RenderPollOptions(updatedOptions);
+                                                return;
+                                            }
+                                    RenderPollOptions(options);
+                                }
+                                catch (Exception ex) { await ShowApiErrorAsync("Unable to vote in poll", ex.Message); }
+                                finally { item.IsEnabled = true; }
+                            };
+                            pollList.Items.Add(item);
+                        }
                     }
+                    RenderPollOptions(options);
+                    pollPanel.Children.Add(pollList);
+                }
                 else pollPanel.Children.Add(Text("Poll options are not available.", 12));
                 card.Children.Add(Surface(pollPanel, new Thickness(10)));
             }
@@ -3635,14 +3755,7 @@ public sealed partial class MainWindow : Window
             var comments = SchoologyApiClient.ReadRecords(document.RootElement, "comment", "comments");
             foreach (var comment in comments)
             {
-                var row = new StackPanel { Spacing = 4 };
-                var author = ProfileValue(comment.Data, "user_name", "author_name", "name_display", "created_by") ?? comment.Title;
-                row.Children.Add(Text(author, 12, true));
-                var created = ProfileValue(comment.Data, "created", "created_at", "timestamp");
-                if (!string.IsNullOrWhiteSpace(created)) { var date = Text(created, 10); date.Foreground = ThemeBrush("SchoologyMutedTextBrush"); row.Children.Add(date); }
-                var commentText = StripMarkup(ProfileValue(comment.Data, "comment", "body", "text", "message") ?? comment.Subtitle);
-                if (!string.IsNullOrWhiteSpace(commentText)) row.Children.Add(Text(commentText, 12));
-                list.Children.Add(Surface(row));
+                list.Children.Add(BuildCommentRow(comment));
             }
             status.Text = comments.Count == 0 ? "No comments yet. Be the first to comment." : $"{comments.Count} comments";
         }
@@ -3667,6 +3780,7 @@ public sealed partial class MainWindow : Window
         var group = new Grid { ColumnSpacing = 0 };
         group.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         group.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        group.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         group.Children.Add(primary);
         var divider = new Border { Width = 1, Background = ThemeBrush("SchoologyDividerBrush"),
             VerticalAlignment = VerticalAlignment.Stretch, Margin = new Thickness(0, 6, 0, 6),
@@ -3674,7 +3788,7 @@ public sealed partial class MainWindow : Window
         Grid.SetColumn(divider, 1);
         group.Children.Add(divider);
         count.Tag = divider;
-        Grid.SetColumn(count, 1);
+        Grid.SetColumn(count, 2);
         group.Children.Add(count);
         return new Border
         {
@@ -3708,13 +3822,7 @@ public sealed partial class MainWindow : Window
 
             foreach (var comment in comments.TakeLast(2))
             {
-                var row = new StackPanel { Spacing = 3, Margin = new Thickness(10, 7, 10, 7) };
-                var author = ProfileValue(comment.Data, "user_name", "author_name", "name_display", "display_name") ??
-                    comment.Title;
-                row.Children.Add(Text(author, 12, true));
-                var body = StripMarkup(ProfileValue(comment.Data, "comment", "body", "text", "message") ?? comment.Subtitle);
-                if (!string.IsNullOrWhiteSpace(body)) row.Children.Add(Text(body, 12));
-                preview.Children.Add(Surface(row, new Thickness(0)));
+                preview.Children.Add(BuildCommentRow(comment));
             }
 
             if (comments.Count > 2)
@@ -3796,34 +3904,7 @@ public sealed partial class MainWindow : Window
             content.Children.Clear();
             if (comments.Count == 0) content.Children.Add(Text("No comments yet.", 13));
             foreach (var comment in comments)
-            {
-                var row = new StackPanel { Spacing = 4, Margin = new Thickness(10, 8, 10, 8) };
-                var authorId = JsonLong(comment.Data, "uid", "user_id", "userId", "author_id", "authorId");
-                var author = ProfileValue(comment.Data, "user_name", "author_name", "name_display", "display_name");
-                if (authorId > 0)
-                {
-                    try
-                    {
-                        using var userDocument = await _api.GetUserAsync(_session, authorId);
-                        var user = userDocument.RootElement.TryGetProperty("user", out var nestedUser)
-                            ? nestedUser : userDocument.RootElement;
-                        author ??= ProfileValue(user, "name_display", "display_name", "name", "user_name");
-                    }
-                    catch { }
-                }
-                row.Children.Add(Text(author ?? comment.Title, 12, true));
-                var created = ProfileValue(comment.Data, "created", "created_at", "timestamp");
-                if (!string.IsNullOrWhiteSpace(created))
-                {
-                    var date = Text(ParseSchoologyDate(created)?.ToString("g",
-                        System.Globalization.CultureInfo.CurrentCulture) ?? created, 10);
-                    date.Foreground = ThemeBrush("SchoologyMutedTextBrush");
-                    row.Children.Add(date);
-                }
-                var body = StripMarkup(ProfileValue(comment.Data, "comment", "body", "text", "message") ?? comment.Subtitle);
-                if (!string.IsNullOrWhiteSpace(body)) row.Children.Add(Text(body, 13));
-                content.Children.Add(Surface(row));
-            }
+                content.Children.Add(BuildCommentRow(comment));
             dialog.Title = comments.Count == 0 ? "Comments" : $"Comments ({comments.Count})";
         }
         catch (Exception ex)
@@ -3848,10 +3929,23 @@ public sealed partial class MainWindow : Window
             if (users.Count == 0) content.Children.Add(Text("No likes were returned.", 13));
             foreach (var person in users)
             {
-                var name = ProfileValue(person.Data, "name_display", "display_name", "name", "user_name") ??
-                    string.Join(" ", new[] { ProfileValue(person.Data, "name_first"), ProfileValue(person.Data, "name_last") }
+                var data = person.Data;
+                var user = data.ValueKind == JsonValueKind.Object && data.TryGetProperty("user", out var nested)
+                    ? nested : data;
+                var userId = JsonLong(data, "uid", "user_id", "userId", "id");
+                if (userId <= 0) userId = JsonLong(user, "id", "uid", "user_id");
+                var name = ProfileValue(user, "name_display", "display_name", "name", "user_name") ??
+                    ProfileValue(data, "name_display", "display_name", "name", "user_name") ??
+                    string.Join(" ", new[] { ProfileValue(user, "name_first", "first_name"), ProfileValue(user, "name_last", "last_name") }
                         .Where(value => !string.IsNullOrWhiteSpace(value)));
-                content.Children.Add(Text(string.IsNullOrWhiteSpace(name) ? person.Title : name, 13));
+                var row = new Grid { ColumnSpacing = 10, Padding = new Thickness(8, 6, 8, 6) };
+                row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(38) });
+                row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+                row.Children.Add(BuildProfileAvatar(data, userId));
+                var label = Text(string.IsNullOrWhiteSpace(name) ? person.Title : name, 13, true);
+                Grid.SetColumn(label, 1);
+                row.Children.Add(label);
+                content.Children.Add(Surface(row, new Thickness(0)));
             }
             await new ContentDialog
             {

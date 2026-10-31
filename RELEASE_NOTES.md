@@ -1,3 +1,11 @@
+## [2026.10.0-port.20]
+
+- Add official Android-compatible poll voting in a native WinUI ListView.
+- Add connected folder open/back animations that respect Windows and app reduced-motion settings.
+- Reuse one avatar-backed comment row in post previews and the full comments dialog; show profile photos in likes.
+- Fix the like/comment action divider so it sits between the action label and its count, not over the count.
+- Size member lists to the available window viewport so their native ListView can scroll through the complete roster.
+
 ## [2026.10.0-port.19]
 
 - Reduce Windows installer size by downloading the Windows App SDK runtime prerequisite during setup instead of embedding its installer inside every Schoology installer.
