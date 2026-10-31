@@ -1,3 +1,11 @@
+## [2026.10.0-port.16]
+
+- Add native notifications, requests, and hierarchical resources pages using Schoology API data.
+- Convert grades and resource browsing to expandable WinUI TreeViews.
+- Add a persistent authenticated WebView2 for Schoology account info, assessment content, and LTI/resource-app launches.
+- Replace generic empty provider placeholders with the Tauri port's empty-state wording.
+- Fix the three reported C# compiler errors.
+
 # Schoology WinUI release notes
 
 ## [2026.10.0-port.15]

@@ -15,6 +15,7 @@ using System.Runtime.InteropServices;
 using Windows.Graphics;
 using Windows.Storage.Streams;
 using Microsoft.UI.Xaml.Media.Imaging;
+using Microsoft.Web.WebView2.Core;
 using Windows.UI.ViewManagement;
 using Windows.System;
 
@@ -28,7 +29,6 @@ public sealed partial class MainWindow : Window
     private string _lastRenderedPage = "splash";
     private string _section = "Recent Activity";
     private NavigationView? _appNavigation;
-    private SplitView? _homeSplitView;
     private Frame? _sectionFrame;
     private string _selectedEntity = string.Empty;
     private long _selectedEntityId;
@@ -37,6 +37,11 @@ public sealed partial class MainWindow : Window
     private readonly ObservableCollection<SchoologyEntity> _courses = new();
     private readonly ObservableCollection<SchoologyEntity> _groups = new();
     private readonly Dictionary<long, JsonElement> _userProfileCache = new();
+    private WebView2? _sharedWebView;
+    private bool _sharedWebViewInitialized;
+    private bool _sharedWebViewAllowLti;
+    private long _sharedWebViewSessionUserId;
+    private TextBlock? _sharedWebViewStatus;
     private SchoologyAuthService.Session? _session;
     private QrCameraScanner? _qrScanner;
     private MediaPlayer? _qrPlayer;
@@ -60,6 +65,7 @@ public sealed partial class MainWindow : Window
             "Dark" => ElementTheme.Dark,
             _ => ElementTheme.Default
         };
+        _root.ActualThemeChanged += (_, _) => UpdateSharedWebViewTheme();
         Title = "Schoology";
         ExtendsContentIntoTitleBar = true;
         AppWindow.TitleBar.ExtendsContentIntoTitleBar = true;
@@ -176,6 +182,26 @@ public sealed partial class MainWindow : Window
         Text = value, FontSize = size, FontWeight = bold ? Microsoft.UI.Text.FontWeights.SemiBold : Microsoft.UI.Text.FontWeights.Normal,
         TextWrapping = TextWrapping.Wrap, VerticalAlignment = VerticalAlignment.Center
     };
+    private UIElement EmptyState(string title, string? description = null)
+    {
+        var content = new StackPanel
+        {
+            Spacing = 6,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center,
+            MaxWidth = 520,
+            Margin = new Thickness(20)
+        };
+        content.Children.Add(Text(title, 18, true));
+        if (!string.IsNullOrWhiteSpace(description))
+        {
+            var detail = Text(description, 13);
+            detail.Foreground = ThemeBrush("SchoologyMutedTextBrush");
+            content.Children.Add(detail);
+        }
+        return Surface(content, new Thickness(20));
+    }
+
     private static Button Action(string label, RoutedEventHandler handler, bool primary = false)
     {
         var b = new Button { Content = label, Padding = new Thickness(14, 9, 14, 9), Margin = new Thickness(0, 3, 0, 3), HorizontalAlignment = HorizontalAlignment.Stretch };
@@ -1163,7 +1189,7 @@ public sealed partial class MainWindow : Window
                 return;
             }
             if (item.Tag is not string rootTarget) return;
-            if (rootTarget == "Sign out") { _auth.SignOut(); _session = null; _sectionFrame = null; ShowLogin(); }
+            if (rootTarget == "Sign out") { _auth.SignOut(); _session = null; _sharedWebViewInitialized = false; _sharedWebViewSessionUserId = 0; _sectionFrame = null; ShowLogin(); }
             else ShowHome(rootTarget == "Home" ? "Recent Activity" : rootTarget);
         };
         _appNavigation = nav;
@@ -1195,11 +1221,17 @@ public sealed partial class MainWindow : Window
             page = BuildGradesPage();
         else if (section == "Profile")
             page = BuildProfilePage();
+        else if (section == "Notifications")
+            page = BuildNotificationsPage();
+        else if (section == "Requests")
+            page = BuildRequestsPage();
+        else if (section == "Resources")
+            page = BuildResourcesPage();
         else
         {
             var panel = new StackPanel { Spacing = 12, Margin = new Thickness(24) };
-            panel.Children.Add(Text(section, 26, true));
-            panel.Children.Add(Surface(Text($"The {section.ToLowerInvariant()} view is ready for its Schoology data provider. No sample records are presented as live account data.")));
+            panel.Children.Add(Text(section, 24, true));
+            panel.Children.Add(EmptyState($"No {section.ToLowerInvariant()} available."));
             page = panel;
         }
         if (_sectionFrame is not null)
@@ -1342,7 +1374,6 @@ public sealed partial class MainWindow : Window
             wide.Visibility = useNarrow ? Visibility.Collapsed : Visibility.Visible;
             narrow.Visibility = useNarrow ? Visibility.Visible : Visibility.Collapsed;
         };
-        _homeSplitView = null;
         return root;
     }
 
@@ -1382,7 +1413,7 @@ public sealed partial class MainWindow : Window
             var records = SchoologyApiClient.ReadRecords(document.RootElement, "update", "updates", "update_list");
             await ResolvePostAuthorsAsync(records, session);
             panel.Children.Remove(status);
-            if (records.Count == 0) { panel.Children.Add(Surface(Text("No recent activity was returned by Schoology."))); return; }
+            if (records.Count == 0) { panel.Children.Add(EmptyState("No recent activity", "Your recent Schoology activity will appear here.")); return; }
             foreach (var record in records)
             {
                 var id = JsonLong(record.Data, "user_id", "uid", "author_id", "authorId", "created_by_id");
@@ -1508,6 +1539,47 @@ public sealed partial class MainWindow : Window
 
     private async Task ShowUpcomingItemAsync(SchoologyApiRecord record)
     {
+        var type = (ProfileValue(record.Data, "type", "event_type", "eventType") ?? "").ToLowerInvariant();
+        var itemId = JsonLong(record.Data, "assignment_id", "assignmentId", "id");
+        var sectionId = JsonLong(record.Data, "section_id", "sectionId");
+        if (type == "assignment" && itemId > 0 && sectionId > 0 && _session is not null)
+        {
+            using var assignmentDocument = await _api.GetAssignmentAsync(_session, sectionId, itemId);
+            var assignment = assignmentDocument.RootElement.TryGetProperty("assignment", out var nested)
+                ? nested : assignmentDocument.RootElement;
+            var assignmentType = (ProfileValue(assignment, "assignment_type", "assignmentType", "type") ?? "").ToLowerInvariant();
+            var assignmentUrl = ProfileValue(assignment, "web_url", "webUrl", "launch_url", "launchUrl", "url", "href", "location");
+            if (assignmentType == "lti_submission" && !string.IsNullOrWhiteSpace(assignmentUrl))
+                await OpenSharedWebViewAsync(assignmentUrl, record.Title, allowLtiExternal: true,
+                    onBack: () => ShowHome("Upcoming"));
+            else
+                await OpenSharedWebViewAsync($"https://app.schoology.com/assignment/{itemId}", record.Title,
+                    allowLtiExternal: true, onBack: () => ShowHome("Upcoming"));
+            return;
+        }
+        if (type is "assessment" or "assessment_v2" or "managed_assessment" or "quiz" or "test")
+        {
+            if (itemId > 0)
+            {
+                await OpenSharedWebViewAsync($"https://app.schoology.com/assignment/{itemId}", record.Title,
+                    allowLtiExternal: true, onBack: () => ShowHome("Upcoming"));
+                return;
+            }
+        }
+        if ((type is "external_tool" or "lti" or "scorm") && sectionId > 0 && itemId > 0)
+        {
+            var route = type == "external_tool" ? "external-tool" : type;
+            await OpenSharedWebViewAsync($"https://app.schoology.com/section/{sectionId}/{route}/{itemId}",
+                record.Title, allowLtiExternal: true, onBack: () => ShowHome("Upcoming"));
+            return;
+        }
+        if (type == "discussion" && sectionId > 0 && itemId > 0)
+        {
+            await OpenSharedWebViewAsync($"https://app.schoology.com/section/{sectionId}/discussion/view/{itemId}",
+                record.Title, onBack: () => ShowHome("Upcoming"));
+            return;
+        }
+
         var content = new StackPanel { Spacing = 8 };
         content.Children.Add(Text(record.Title, 20, true));
         var course = ProfileValue(record.Data, "section_title", "course_title", "section_name");
@@ -1588,6 +1660,452 @@ public sealed partial class MainWindow : Window
         }
     }
 
+    private sealed record SchoologyRequestItem(string Type, long Id, string Title, string Subtitle, JsonElement Data);
+    private sealed record ResourceTreeEntry(string Title, string Kind, long Id, long CollectionId, JsonElement Data)
+    {
+        public override string ToString() => Title;
+    }
+
+    private UIElement BuildNotificationsPage()
+    {
+        var root = new Grid { Margin = new Thickness(24), RowSpacing = 10 };
+        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        root.Children.Add(Text("Notifications", 24, true));
+        var list = new ListView { SelectionMode = ListViewSelectionMode.None,
+            IsItemClickEnabled = false, HorizontalContentAlignment = HorizontalAlignment.Stretch };
+        AutomationProperties.SetAutomationId(list, "SchoologyNotificationsList");
+        Grid.SetRow(list, 1); root.Children.Add(list);
+        var status = Text("Loading notifications…", 13);
+        list.Items.Add(new ListViewItem { Content = status });
+        _ = LoadNotificationsAsync(list);
+        return root;
+    }
+
+    private async Task LoadNotificationsAsync(ListView list)
+    {
+        try
+        {
+            var session = _session ?? throw new InvalidOperationException("Sign in to view notifications.");
+            using var document = await _api.GetNotificationsAsync(session);
+            var root = document.RootElement;
+            var notificationData = root;
+            if (root.ValueKind == JsonValueKind.Object && root.TryGetProperty("data", out var dataNode) &&
+                dataNode.ValueKind == JsonValueKind.Object && dataNode.TryGetProperty("notifications", out var dataNotifications))
+                notificationData = dataNotifications;
+            else if (root.ValueKind == JsonValueKind.Object && root.TryGetProperty("notifications", out var nestedNotifications))
+                notificationData = nestedNotifications;
+            var unviewed = Math.Max(JsonLong(root, "unviewed_count", "unviewedCount"),
+                JsonLong(notificationData, "unviewed_count", "unviewedCount"));
+            if (unviewed > 0)
+            {
+                try { using var ignored = await _api.MarkNotificationsReadAsync(session); }
+                catch (Exception ex) { App.WriteStartupLog("Could not mark notifications as read.", ex); }
+            }
+            var records = SchoologyApiClient.ReadRecords(root, "notification", "notifications");
+            if (records.Count == 0)
+                records = SchoologyApiClient.ReadRecords(notificationData, "notification", "notifications", "items");
+            list.Items.Clear();
+            if (records.Count == 0)
+            {
+                list.Items.Add(new ListViewItem { Content = EmptyState("You have no notifications") });
+                return;
+            }
+            foreach (var record in records)
+            {
+                var body = ProfileValue(record.Data, "body", "message", "title", "text") ?? record.Title;
+                var args = record.Data.ValueKind == JsonValueKind.Object &&
+                    record.Data.TryGetProperty("body_args", out var bodyArgs) ? bodyArgs :
+                    record.Data.ValueKind == JsonValueKind.Object &&
+                    record.Data.TryGetProperty("bodyArgs", out var bodyArgsCamel) ? bodyArgsCamel : default;
+                if (args.ValueKind == JsonValueKind.Array)
+                    foreach (var arg in args.EnumerateArray())
+                        body = body.Replace("%s", ProfileValue(arg, "title", "name") ?? "", StringComparison.Ordinal);
+                var type = (ProfileValue(record.Data, "type", "notification_type", "notificationType") ?? "").ToLowerInvariant();
+                var iconGlyph = type.Contains("grade") ? "\uE8A5" :
+                    type.Contains("assignment") || type.Contains("assessment") ? "\uE8F1" :
+                    type.Contains("comment") ? "\uE90A" :
+                    type.Contains("event") ? "\uE787" : "\uE713";
+                var row = new Grid { ColumnSpacing = 12, Padding = new Thickness(10, 12, 10, 12) };
+                row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(36) });
+                row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+                row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+                row.Children.Add(new FontIcon { Glyph = iconGlyph, FontSize = 22,
+                    Foreground = ThemeBrush("SchoologyBlueBrush"), VerticalAlignment = VerticalAlignment.Top });
+                var labels = new StackPanel { Spacing = 4 };
+                labels.Children.Add(Text(StripMarkup(body), 14, true));
+                var dateRaw = ProfileValue(record.Data, "created", "timestamp", "created_at");
+                if (!string.IsNullOrWhiteSpace(dateRaw))
+                {
+                    var date = Text(ParseSchoologyDate(dateRaw)?.ToString("g",
+                        System.Globalization.CultureInfo.CurrentCulture) ?? dateRaw, 11);
+                    date.Foreground = ThemeBrush("SchoologyMutedTextBrush");
+                    labels.Children.Add(date);
+                }
+                Grid.SetColumn(labels, 1); row.Children.Add(labels);
+                var disclosure = new FontIcon { Glyph = "\uE76C", FontSize = 14,
+                    Foreground = ThemeBrush("SchoologyMutedTextBrush"), VerticalAlignment = VerticalAlignment.Center };
+                Grid.SetColumn(disclosure, 2); row.Children.Add(disclosure);
+                var item = new ListViewItem { Content = row, Tag = record,
+                    HorizontalContentAlignment = HorizontalAlignment.Stretch };
+                AutomationProperties.SetName(item, StripMarkup(body));
+                item.Tapped += async (_, _) => await OpenNotificationAsync(record, body);
+                item.KeyDown += async (_, args) =>
+                {
+                    if (args.Key == Windows.System.VirtualKey.Enter)
+                        await OpenNotificationAsync(record, body);
+                };
+                list.Items.Add(item);
+            }
+        }
+        catch (Exception ex)
+        {
+            list.Items.Clear();
+            list.Items.Add(new ListViewItem { Content = EmptyState("Unable to load notifications", ex.Message) });
+            list.Items.Add(new ListViewItem { Content = Action("Retry", async (_, _) => await LoadNotificationsAsync(list)) });
+        }
+    }
+
+    private static string? FindNotificationLink(JsonElement element)
+    {
+        if (element.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var key in new[] { "url", "href", "link", "target_url", "targetUrl", "web_url", "webUrl" })
+                if (element.TryGetProperty(key, out var value) && value.ValueKind == JsonValueKind.String &&
+                    !string.IsNullOrWhiteSpace(value.GetString()))
+                    return value.GetString();
+            foreach (var property in element.EnumerateObject())
+            {
+                var nested = FindNotificationLink(property.Value);
+                if (!string.IsNullOrWhiteSpace(nested)) return nested;
+            }
+        }
+        else if (element.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in element.EnumerateArray())
+            {
+                var nested = FindNotificationLink(item);
+                if (!string.IsNullOrWhiteSpace(nested)) return nested;
+            }
+        }
+        return null;
+    }
+
+    private async Task OpenNotificationAsync(SchoologyApiRecord record, string body)
+    {
+        var url = FindNotificationLink(record.Data);
+        if (string.IsNullOrWhiteSpace(url))
+        {
+            var dialog = new ContentDialog
+            {
+                Title = "Notification",
+                Content = Text(StripMarkup(body), 14),
+                CloseButtonText = "Close",
+                XamlRoot = _root.XamlRoot
+            };
+            await dialog.ShowAsync();
+            return;
+        }
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
+            uri = new Uri("https://app.schoology.com/" + url.TrimStart('/'));
+        await OpenSharedWebViewAsync(uri.AbsoluteUri, "Notification", onBack: () => ShowHome("Notifications"));
+    }
+
+    private UIElement BuildRequestsPage()
+    {
+        var root = new Grid { Margin = new Thickness(24), RowSpacing = 10 };
+        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        root.Children.Add(Text("Requests", 24, true));
+        var list = new ListView { SelectionMode = ListViewSelectionMode.None,
+            IsItemClickEnabled = false, HorizontalContentAlignment = HorizontalAlignment.Stretch };
+        AutomationProperties.SetAutomationId(list, "SchoologyRequestsList");
+        Grid.SetRow(list, 1); root.Children.Add(list);
+        var status = Text("Loading requests…", 13);
+        list.Items.Add(new ListViewItem { Content = status });
+        _ = LoadRequestsAsync(list);
+        return root;
+    }
+
+    private async Task LoadRequestsAsync(ListView list)
+    {
+        try
+        {
+            var session = _session ?? throw new InvalidOperationException("Sign in to view requests.");
+            var results = await Task.WhenAll(
+                _api.GetFriendRequestsAsync(session),
+                _api.GetGroupInvitationsAsync(session),
+                _api.GetSectionInvitationsAsync(session));
+            using var friendRequests = results[0];
+            using var groupInvitations = results[1];
+            using var sectionInvitations = results[2];
+            var requests = new List<SchoologyRequestItem>();
+            AddRequests(friendRequests.RootElement, "friend", "request", "requests");
+            AddRequests(groupInvitations.RootElement, "group", "invite", "invites");
+            AddRequests(sectionInvitations.RootElement, "section", "invite", "invites");
+            void AddRequests(JsonElement root, string type, params string[] keys)
+            {
+                foreach (var record in SchoologyApiClient.ReadRecords(root, keys))
+                {
+                    var id = JsonLong(record.Data, "id", "request_id", "requestId", "invite_id", "inviteId");
+                    if (id <= 0) continue;
+                    var title = type == "friend"
+                        ? ProfileValue(record.Data, "requester_name", "requesterName", "name", "display_name") ?? "Friend request"
+                        : ProfileValue(record.Data, "name", "title", type == "group" ? "group_name" : "section_title") ?? "Invitation";
+                    var subtitle = ProfileValue(record.Data, "school_name", "schoolName", "description", "message") ?? "";
+                    requests.Add(new SchoologyRequestItem(type, id, title, subtitle, record.Data.Clone()));
+                }
+            }
+
+            list.Items.Clear();
+            if (requests.Count == 0)
+            {
+                list.Items.Add(new ListViewItem { Content = EmptyState("You have no requests") });
+                return;
+            }
+            foreach (var request in requests)
+            {
+                var row = new Grid { ColumnSpacing = 12, Padding = new Thickness(10, 12, 10, 12) };
+                row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+                row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+                var details = new StackPanel { Spacing = 4 };
+                var title = Action(request.Title, async (_, _) => await OpenRequestAsync(request));
+                title.HorizontalAlignment = HorizontalAlignment.Left;
+                title.HorizontalContentAlignment = HorizontalAlignment.Left;
+                title.Padding = new Thickness(0, 2, 0, 2);
+                title.Background = new SolidColorBrush(Colors.Transparent);
+                title.BorderThickness = new Thickness(0);
+                details.Children.Add(title);
+                if (!string.IsNullOrWhiteSpace(request.Subtitle))
+                {
+                    var subtitle = Text(request.Subtitle, 12);
+                    subtitle.Foreground = ThemeBrush("SchoologyMutedTextBrush");
+                    details.Children.Add(subtitle);
+                }
+                Grid.SetColumn(details, 0); row.Children.Add(details);
+                var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6,
+                    VerticalAlignment = VerticalAlignment.Center };
+                var accept = Action("Accept", async (_, _) => await RespondToRequestAsync(request, true), true);
+                accept.Width = 88;
+                var decline = Action("Decline", async (_, _) => await RespondToRequestAsync(request, false));
+                decline.Width = 88;
+                actions.Children.Add(accept); actions.Children.Add(decline);
+                Grid.SetColumn(actions, 1); row.Children.Add(actions);
+                var item = new ListViewItem { Content = row, Tag = request,
+                    HorizontalContentAlignment = HorizontalAlignment.Stretch };
+                list.Items.Add(item);
+            }
+        }
+        catch (Exception ex)
+        {
+            list.Items.Clear();
+            list.Items.Add(new ListViewItem { Content = EmptyState("Unable to load requests", ex.Message) });
+            list.Items.Add(new ListViewItem { Content = Action("Retry", async (_, _) => await LoadRequestsAsync(list)) });
+        }
+    }
+
+    private async Task OpenRequestAsync(SchoologyRequestItem request)
+    {
+        var id = request.Type == "friend"
+            ? JsonLong(request.Data, "requester_id", "requesterId", "user_id", "uid")
+            : JsonLong(request.Data, "realm_id", "realmId", "group_id", "groupId", "section_id", "sectionId");
+        if (id <= 0) return;
+        var url = request.Type == "friend" ? $"https://app.schoology.com/user/{id}" :
+            request.Type == "group" ? $"https://app.schoology.com/group/{id}" : $"https://app.schoology.com/course/{id}";
+        await OpenSharedWebViewAsync(url, request.Title, onBack: () => ShowHome("Requests"));
+    }
+
+    private async Task RespondToRequestAsync(SchoologyRequestItem request, bool accept)
+    {
+        try
+        {
+            if (_session is null) throw new InvalidOperationException("Sign in to manage requests.");
+            using var response = await _api.RespondToRequestAsync(_session, request.Type, request.Id, accept);
+            if (_sectionFrame is not null) await LoadRequestsAsync((ListView)((Grid)((SchoologyShellContentPage)_sectionFrame.Content!).Content!).Children.OfType<ListView>().First());
+            else ShowHome("Requests");
+        }
+        catch (Exception ex) { await ShowApiErrorAsync($"Unable to {(accept ? "accept" : "decline")} request", ex.Message); }
+    }
+
+    private UIElement BuildResourcesPage()
+    {
+        var root = new Grid { Margin = new Thickness(24), RowSpacing = 10 };
+        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        root.Children.Add(Text("Resources", 24, true));
+        var tree = new TreeView { HorizontalAlignment = HorizontalAlignment.Stretch,
+            VerticalAlignment = VerticalAlignment.Stretch };
+        AutomationProperties.SetAutomationId(tree, "SchoologyResourcesTree");
+        Grid.SetRow(tree, 1); root.Children.Add(tree);
+        var status = Text("Loading resources…", 13);
+        tree.RootNodes.Add(new TreeViewNode { Content = status });
+        tree.Expanding += async (_, args) =>
+        {
+            if (args.Node.Content is ResourceTreeEntry entry &&
+                (entry.Kind is "collection" or "folder") && args.Node.HasUnrealizedChildren)
+                await LoadResourceTreeChildrenAsync(args.Node, entry);
+        };
+        tree.ItemInvoked += async (_, args) =>
+        {
+            if (args.InvokedItem is ResourceTreeEntry entry && (entry.Kind is "resource" or "app"))
+                await OpenResourceTreeEntryAsync(entry);
+        };
+        _ = LoadResourcesAsync(tree);
+        return root;
+    }
+
+    private async Task LoadResourcesAsync(TreeView tree)
+    {
+        try
+        {
+            var session = _session ?? throw new InvalidOperationException("Sign in to view resources.");
+            using var collectionsDocument = await _api.GetResourceCollectionsAsync(session);
+            var apps = new List<SchoologyApiRecord>();
+            try
+            {
+                using var appsDocument = await _api.GetResourceAppsAsync(session);
+                apps.AddRange(SchoologyApiClient.ReadRecords(appsDocument.RootElement,
+                    "resource_apps", "resourceApps", "collection", "collections"));
+            }
+            catch (Exception ex) { App.WriteStartupLog("Schoology resource apps could not be loaded; keeping resource collections available.", ex); }
+            var all = SchoologyApiClient.ReadRecords(collectionsDocument.RootElement, "collection", "collections", "collection_list");
+            var uid = session.UserId;
+            var mine = new List<SchoologyApiRecord>();
+            var shared = new List<SchoologyApiRecord>();
+            var groups = new List<SchoologyApiRecord>();
+            foreach (var item in all)
+            {
+                var owner = JsonLong(item.Data, "collection_owner_id", "collectionOwnerId", "uid", "owner_id");
+                var realm = (ProfileValue(item.Data, "collection_realm", "collectionRealm", "realm") ?? "").ToLowerInvariant();
+                var sharedCount = JsonLong(item.Data, "shared_users_count", "sharedUsersCount", "shared_users");
+                if (string.IsNullOrWhiteSpace(realm) && owner == uid) mine.Add(item);
+                else if (sharedCount > 0) shared.Add(item);
+                else if (realm == "group") groups.Add(item);
+            }
+            tree.RootNodes.Clear();
+            if (mine.Count + shared.Count + groups.Count + apps.Count == 0)
+            {
+                tree.RootNodes.Add(new TreeViewNode { Content = EmptyState("No resources") });
+                return;
+            }
+            AddCategory("My Resources", mine);
+            AddCategory("Shared", shared);
+            AddCategory("Groups", groups);
+            AddCategory("Resource Apps", apps);
+
+            void AddCategory(string title, IReadOnlyList<SchoologyApiRecord> items)
+            {
+                var category = new TreeViewNode { Content = title, IsExpanded = false };
+                if (items.Count == 0)
+                    category.Children.Add(new TreeViewNode { Content = "No resources" });
+                foreach (var item in items)
+                {
+                    var id = JsonLong(item.Data, "collection_id", "collectionID", "id", "app_id", "appId");
+                    var entryTitle = ProfileValue(item.Data, "collection_title", "app_title", "appTitle", "title", "name") ?? item.Title;
+                    var entry = new ResourceTreeEntry(entryTitle, title == "Resource Apps" ? "app" : "collection", id, 0, item.Data.Clone());
+                    var node = new TreeViewNode { Content = entry, HasUnrealizedChildren = entry.Kind == "collection" };
+                                        category.Children.Add(node);
+                }
+                tree.RootNodes.Add(category);
+            }
+        }
+        catch (Exception ex)
+        {
+            tree.RootNodes.Clear();
+            var error = new TreeViewNode { Content = $"Unable to load resources: {ex.Message}" };
+            tree.RootNodes.Add(error);
+            tree.RootNodes.Add(new TreeViewNode { Content = Action("Retry", async (_, _) => await LoadResourcesAsync(tree)) });
+        }
+    }
+
+    private async Task LoadResourceTreeChildrenAsync(TreeViewNode node, ResourceTreeEntry entry)
+    {
+        node.HasUnrealizedChildren = false;
+        node.Children.Clear();
+        node.Children.Add(new TreeViewNode { Content = "Loading resources…" });
+        try
+        {
+            if (_session is null)
+                throw new InvalidOperationException("Sign in to view this resource collection.");
+            var collectionId = entry.Kind == "collection" ? entry.Id : entry.CollectionId;
+            if (collectionId <= 0)
+                throw new InvalidOperationException("This resource collection is unavailable.");
+            var folderId = entry.Kind == "folder" ? entry.Id :
+                JsonLong(entry.Data, "folder_id", "folderId", "collection_folder_id", "collectionFolderId");
+            using var document = await _api.GetCollectionResourcesAsync(_session, collectionId, folderId);
+            var records = SchoologyApiClient.ReadRecords(document.RootElement, "resource", "resources", "resource_list");
+            node.Children.Clear();
+            if (records.Count == 0)
+            {
+                node.Children.Add(new TreeViewNode { Content = "No resources" });
+                return;
+            }
+            foreach (var record in records)
+            {
+                var type = (ProfileValue(record.Data, "type", "resource_type", "document_type", "documentType") ?? "").ToLowerInvariant();
+                var isFolder = type.Contains("folder");
+                var id = JsonLong(record.Data, "id", "resource_id", "resourceId", "folder_id", "folderId");
+                var childTitle = ProfileValue(record.Data, "resource_title", "resourceTitle", "title", "name",
+                    "filename", "file_name") ?? record.Title;
+                var child = new ResourceTreeEntry(childTitle, isFolder ? "folder" : "resource", id,
+                    collectionId, record.Data.Clone());
+                var childNode = new TreeViewNode { Content = child, HasUnrealizedChildren = isFolder };
+                node.Children.Add(childNode);
+            }
+        }
+        catch (Exception ex)
+        {
+            node.Children.Clear();
+            node.Children.Add(new TreeViewNode { Content = $"Unable to load resources: {ex.Message}" });
+            node.HasUnrealizedChildren = true;
+        }
+    }
+
+    private async Task OpenResourceTreeEntryAsync(ResourceTreeEntry entry)
+    {
+        try
+        {
+            if (_session is null) return;
+            if (entry.Kind == "app")
+            {
+                if (entry.Id <= 0) throw new InvalidOperationException("This resource app is missing its ID.");
+                using var launch = await _api.LaunchResourceAppAsync(_session, entry.Id);
+                var launchUrl = ProfileValue(launch.RootElement, "url", "launch_token_url", "launchTokenUrl");
+                if (string.IsNullOrWhiteSpace(launchUrl) &&
+                    launch.RootElement.TryGetProperty("data", out var data))
+                    launchUrl = ProfileValue(data, "url", "launchTokenUrl", "launch_token_url");
+                if (string.IsNullOrWhiteSpace(launchUrl))
+                    throw new InvalidOperationException("Schoology did not return a resource-app launch URL.");
+                await OpenSharedWebViewAsync(launchUrl, entry.Title, allowLtiExternal: true,
+                    onBack: () => ShowHome("Resources"));
+                return;
+            }
+
+            var url = ProfileValue(entry.Data, "web_url", "webUrl", "launch_url", "launchUrl",
+                "url", "link", "download_url", "downloadUrl", "file_download_url", "fileDownloadURL", "download_path", "downloadPath", "file_url", "fileUrl");
+            var type = (ProfileValue(entry.Data, "type", "resource_type", "document_type", "documentType") ?? "").ToLowerInvariant();
+            if (string.IsNullOrWhiteSpace(url))
+            {
+                var details = new StackPanel { Spacing = 8 };
+                details.Children.Add(Text(entry.Title, 18, true));
+                var description = ProfileValue(entry.Data, "description", "body", "text");
+                if (!string.IsNullOrWhiteSpace(description)) details.Children.Add(Text(StripMarkup(description), 13));
+                details.Children.Add(Text("Schoology did not provide a web link for this resource.", 12));
+                await new ContentDialog { Title = "Resource details", Content = details,
+                    CloseButtonText = "Close", XamlRoot = _root.XamlRoot }.ShowAsync();
+                return;
+            }
+            if (!Uri.TryCreate(url, UriKind.Absolute, out var target))
+                target = new Uri("https://app.schoology.com/" + url.TrimStart('/'));
+            var embeddedExternal = type.Contains("lti") || type.Contains("external_tool") ||
+                type.Contains("assessment") || type.Contains("quiz") || type.Contains("test") ||
+                        type.Contains("embed") || type.Contains("scorm");
+            await OpenSharedWebViewAsync(target.AbsoluteUri, entry.Title, embeddedExternal,
+                () => ShowHome("Resources"));
+        }
+        catch (Exception ex) { await ShowApiErrorAsync("Unable to open resource", ex.Message); }
+    }
+
     private UIElement BuildSettingsPage()
     {
         var panel = new StackPanel { Spacing = 14, Margin = new Thickness(24), MaxWidth = 760 };
@@ -1619,6 +2137,9 @@ public sealed partial class MainWindow : Window
         panel.Children.Add(Surface(Text($"Schoology · {GetType().Assembly.GetName().Version}", 13)));
         panel.Children.Add(Action("Open Schoology website", (_, _) =>
             _ = Windows.System.Launcher.LaunchUriAsync(new Uri("https://www.schoology.com"))));
+        panel.Children.Add(Action("Account Info", async (_, _) =>
+            await OpenSharedWebViewAsync("https://app.schoology.com/settings/account", "Account Info",
+                onBack: () => ShowHome("Settings"))));
         return new ScrollViewer { Content = panel, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
     }
 
@@ -1787,8 +2308,6 @@ public sealed partial class MainWindow : Window
         {
             var schoolName = ProfileValue(selected.Data, "school_title", "school_name", "school") ??
                 (_session is null ? null : ProfileValue(_session.User, "school_title", "school_name", "school"));
-            var schoolId = ProfileValue(selected.Data, "school_id", "schoolId") ??
-                (_session is null ? null : ProfileValue(_session.User, "school_id", "schoolId"));
             if (!string.IsNullOrWhiteSpace(schoolName) && GetSchoolProfileEntities().Any())
                 compactLabels.Children.Add(Action($"School: {schoolName}", (_, _) => ShowThreePane("School Profile")));
         }
@@ -1903,7 +2422,7 @@ public sealed partial class MainWindow : Window
         heading.Children.Add(Text(tab, 17, true));
         Grid.SetRow(heading, 0); layout.Children.Add(heading);
         var body = new StackPanel { Spacing = 14 };
-        UIElement bodyContent = tab is "Materials" or "Members" or "Discussions" or "Grades" or "Resources"
+        FrameworkElement bodyContent = tab is "Materials" or "Members" or "Discussions" or "Grades" or "Resources"
             ? body
             : new ScrollViewer { VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
                 HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
@@ -1952,13 +2471,20 @@ public sealed partial class MainWindow : Window
                 var selectedSection = sections.FirstOrDefault(record =>
                     JsonLong(record.Data, "section_id", "sectionId", "id") == entityId);
                 if (selectedSection is null)
-                    body.Children.Add(Surface(Text("No grades were returned for this course.")));
+                    body.Children.Add(EmptyState("No grades"));
                 else body.Children.Add(BuildGradeDetails(selectedSection.Data, expandPeriods: true));
                 return;
             }
             if (records.Count == 0)
             {
-                body.Children.Add(Surface(Text($"No {tab.ToLowerInvariant()} were returned by Schoology.")));
+                body.Children.Add(tab switch
+                {
+                    "Updates" => EmptyState("No updates", kind == "Courses" ? "There are no updates in this course." : null),
+                    "Discussions" => EmptyState("No discussions."),
+                    "Resources" => EmptyState("No resources."),
+                    "Members" => EmptyState("No people found."),
+                    _ => EmptyState($"No {tab.ToLowerInvariant()}.")
+                });
                 return;
             }
             if (tab == "Updates")
@@ -2046,7 +2572,55 @@ public sealed partial class MainWindow : Window
         async Task OpenMaterialAsync(SchoologyApiRecord record)
         {
             var title = ProfileValue(record.Data, "title", "name", "filename", "file_name") ?? record.Title;
-            var rawUrl = ProfileValue(record.Data, "web_url", "webUrl", "url", "link", "download_url", "downloadUrl", "file_url", "fileUrl");
+            var materialType = (ProfileValue(record.Data, "type", "resource_type", "document_type", "documentType") ?? "").ToLowerInvariant();
+            var materialId = JsonLong(record.Data, "id", "assignment_id", "assignmentId", "document_id", "documentId");
+            if ((materialType is "assignment" or "assignment_v2") && materialId > 0 && _session is not null)
+            {
+                using var assignmentDocument = await _api.GetAssignmentAsync(_session, sectionId, materialId);
+                var assignment = assignmentDocument.RootElement.TryGetProperty("assignment", out var nestedAssignment)
+                    ? nestedAssignment : assignmentDocument.RootElement;
+                var assignmentType = (ProfileValue(assignment, "assignment_type", "assignmentType", "type") ?? "").ToLowerInvariant();
+                var assignmentUrl = ProfileValue(assignment, "web_url", "webUrl", "launch_url", "launchUrl");
+                if (assignmentType == "lti_submission" && !string.IsNullOrWhiteSpace(assignmentUrl))
+                {
+                    await OpenSharedWebViewAsync(assignmentUrl, title, allowLtiExternal: true,
+                        () => ShowThreePane("Courses", _courses.FirstOrDefault(course => course.Id == sectionId)));
+                    return;
+                }
+                await OpenSharedWebViewAsync($"https://app.schoology.com/assignment/{materialId}", title,
+                    allowLtiExternal: true,
+                    onBack: () => ShowThreePane("Courses", _courses.FirstOrDefault(course => course.Id == sectionId)));
+                return;
+            }
+            if (materialType is "assessment" or "assessment_v2" or "managed_assessment" or "quiz" or "test")
+            {
+                if (materialId > 0)
+                {
+                    await OpenSharedWebViewAsync($"https://app.schoology.com/assignment/{materialId}", title,
+                        allowLtiExternal: true,
+                        onBack: () => ShowThreePane("Courses", _courses.FirstOrDefault(course => course.Id == sectionId)));
+                    return;
+                }
+            }
+            if ((materialType is "lti" or "external_tool" or "scorm") && materialId > 0)
+            {
+                var route = materialType == "external_tool" ? "external-tool" : materialType;
+                await OpenSharedWebViewAsync($"https://app.schoology.com/section/{sectionId}/{route}/{materialId}",
+                    title, allowLtiExternal: true,
+                    onBack: () => ShowThreePane("Courses", _courses.FirstOrDefault(course => course.Id == sectionId)));
+                return;
+            }
+            var rawUrl = ProfileValue(record.Data, "web_url", "webUrl", "launch_url", "launchUrl",
+                "external_url", "externalUrl", "url", "href", "link", "location", "download_url", "downloadUrl",
+                "file_download_url", "fileDownloadURL", "download_path", "downloadPath", "file_url", "fileUrl");
+            if ((materialType is "link" or "video") && materialId > 0 && _session is not null)
+            {
+                using var documentDetails = await _api.GetDocumentAsync(_session, sectionId, materialId);
+                var documentData = documentDetails.RootElement.TryGetProperty("document", out var nestedDocument)
+                    ? nestedDocument : documentDetails.RootElement;
+                if (string.IsNullOrWhiteSpace(rawUrl))
+                    rawUrl = ProfileValue(documentData, "web_url", "webUrl", "url", "href", "launch_url", "launchUrl", "location");
+            }
             if (!string.IsNullOrWhiteSpace(rawUrl))
             {
                 if (!rawUrl.StartsWith("https://", StringComparison.OrdinalIgnoreCase) &&
@@ -2054,17 +2628,13 @@ public sealed partial class MainWindow : Window
                     rawUrl = "https://app.schoology.com/" + rawUrl.TrimStart('/');
                 if (Uri.TryCreate(rawUrl, UriKind.Absolute, out var uri) && uri.Scheme == Uri.UriSchemeHttps)
                 {
-                    var browser = new WebView2 { MinWidth = 680, MinHeight = 520 };
-                    try
-                    {
-                        await browser.EnsureCoreWebView2Async();
-                        browser.CoreWebView2.Navigate(uri.AbsoluteUri);
-                        var dialog = new ContentDialog { Title = title, Content = browser,
-                            CloseButtonText = "Close", XamlRoot = _root.XamlRoot };
-                        await dialog.ShowAsync();
-                        return;
-                    }
-                    catch (Exception ex) { App.WriteStartupLog("Embedded material navigation failed.", ex); }
+                    var type = (ProfileValue(record.Data, "type", "resource_type", "document_type", "documentType") ?? "").ToLowerInvariant();
+                    var isLtiOrAssessment = type.Contains("lti") || type.Contains("external_tool") ||
+                        type.Contains("assessment") || type.Contains("quiz") || type.Contains("test") ||
+                type.Contains("embed") || type.Contains("scorm");
+                    await OpenSharedWebViewAsync(uri.AbsoluteUri, title, isLtiOrAssessment,
+                        () => ShowThreePane("Courses", _courses.FirstOrDefault(course => course.Id == sectionId)));
+                    return;
                 }
             }
             var details = new StackPanel { Spacing = 8 };
@@ -2102,7 +2672,7 @@ public sealed partial class MainWindow : Window
         panel.Children.Add(breadcrumb);
         panel.Children.Add(list);
         Render(initialRecords);
-        if (initialRecords.Count == 0) list.Items.Add(new ListViewItem { Content = Text("This course has no materials.", 13) });
+        if (initialRecords.Count == 0) list.Items.Add(new ListViewItem { Content = EmptyState("This folder is empty") });
         return panel;
     }
 
@@ -2311,11 +2881,11 @@ public sealed partial class MainWindow : Window
 
         if (update.Data.ValueKind == JsonValueKind.Object)
         {
-            JsonElement attachments = default;
+            JsonElement updateAttachments = default;
             foreach (var key in new[] { "attachments", "attachment", "files" })
-                if (update.Data.TryGetProperty(key, out attachments)) break;
-            var values = attachments.ValueKind == JsonValueKind.Array ? attachments.EnumerateArray().ToArray() :
-                attachments.ValueKind == JsonValueKind.Object ? new[] { attachments } : Array.Empty<JsonElement>();
+                if (update.Data.TryGetProperty(key, out updateAttachments)) break;
+            var values = updateAttachments.ValueKind == JsonValueKind.Array ? updateAttachments.EnumerateArray().ToArray() :
+                updateAttachments.ValueKind == JsonValueKind.Object ? new[] { updateAttachments } : Array.Empty<JsonElement>();
             foreach (var attachment in values)
             {
                 var url = ProfileValue(attachment, "url", "download_url", "downloadUrl", "file_url", "fileUrl", "thumbnail_url");
@@ -3024,62 +3594,77 @@ public sealed partial class MainWindow : Window
         return System.Text.RegularExpressions.Regex.Replace(text, "\\s+", " ").Trim();
     }
 
-    private UIElement BuildGradeDetails(JsonElement section, bool expandPeriods)
+    private TreeView BuildGradeDetails(JsonElement section, bool expandPeriods)
     {
-        var content = new StackPanel { Spacing = 8 };
-        if (section.ValueKind != JsonValueKind.Object) return content;
-        if (section.TryGetProperty("period", out var periods) && periods.ValueKind == JsonValueKind.Array)
-        {
-            foreach (var period in periods.EnumerateArray())
-            {
-                var periodName = ProfileValue(period, "period_title", "title", "name") ?? "Grading period";
-                var periodGrade = ProfileValue(period, "override_str", "override_numeric", "grade");
-                var periodContent = new StackPanel { Spacing = 6, Margin = new Thickness(10) };
-                if (!string.IsNullOrWhiteSpace(periodGrade))
-                    periodContent.Children.Add(Text("Period grade: " + periodGrade, 13, true));
-                if (period.TryGetProperty("assignment", out var assignments) && assignments.ValueKind == JsonValueKind.Array)
-                {
-                    foreach (var assignment in assignments.EnumerateArray())
-                    {
-                        var assignmentId = ProfileValue(assignment, "assignment_id", "id") ?? "Assignment";
-                        var grade = ProfileValue(assignment, "grade", "calculated_grade");
-                        var max = ProfileValue(assignment, "max_points");
-                        var line = new StackPanel { Spacing = 2 };
-                        line.Children.Add(Text("Assignment " + assignmentId, 13, true));
-                        if (!string.IsNullOrWhiteSpace(grade))
-                            line.Children.Add(Text(string.IsNullOrWhiteSpace(max) ? grade : grade + " / " + max, 12));
-                        var comment = ProfileValue(assignment, "comment");
-                        if (!string.IsNullOrWhiteSpace(comment)) line.Children.Add(Text(StripMarkup(comment), 12));
-                        periodContent.Children.Add(Surface(line));
-                    }
-                }
-                content.Children.Add(new Expander { Header = string.IsNullOrWhiteSpace(periodGrade) ? periodName : periodName + " · " + periodGrade,
-                    IsExpanded = expandPeriods, Content = periodContent });
-            }
-        }
+        var tree = new TreeView { HorizontalAlignment = HorizontalAlignment.Stretch };
+        AutomationProperties.SetAutomationId(tree, "SchoologyCourseGradesTree");
+        PopulateGradeTreeNodes(tree.RootNodes, section, expandPeriods);
+        if (tree.RootNodes.Count == 0) tree.RootNodes.Add(new TreeViewNode { Content = "No grades" });
+        return tree;
+    }
+
+    private void PopulateGradeTreeNodes(IList<TreeViewNode> nodes, JsonElement section, bool expandPeriods)
+    {
+        if (section.ValueKind != JsonValueKind.Object) return;
         if (section.TryGetProperty("final_grade", out var finalGrades) && finalGrades.ValueKind == JsonValueKind.Array)
         {
             foreach (var final in finalGrades.EnumerateArray())
             {
-                var grade = ProfileValue(final, "override_str", "override_numeric", "grade");
+                var grade = ProfileValue(final, "override_str", "override_numeric", "grade") ?? "Not posted";
+                var finalNode = new TreeViewNode { Content = "Final grade: " + grade };
                 var comment = ProfileValue(final, "comment");
-                var finalPanel = new StackPanel { Spacing = 3 };
-                finalPanel.Children.Add(Text("Final grade: " + (grade ?? "Not posted"), 13, true));
-                if (!string.IsNullOrWhiteSpace(comment)) finalPanel.Children.Add(Text(StripMarkup(comment), 12));
-                content.Children.Add(Surface(finalPanel));
+                if (!string.IsNullOrWhiteSpace(comment))
+                    finalNode.Children.Add(new TreeViewNode { Content = StripMarkup(comment) });
+                nodes.Add(finalNode);
+            }
+        }
+        if (section.TryGetProperty("period", out var periods) && periods.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var period in periods.EnumerateArray())
+            {
+                var name = ProfileValue(period, "period_title", "title", "name") ?? "Grading period";
+                var grade = ProfileValue(period, "override_str", "override_numeric", "grade");
+                var periodNode = new TreeViewNode
+                {
+                    Content = string.IsNullOrWhiteSpace(grade) ? name : $"{name} · {grade}",
+                    IsExpanded = expandPeriods
+                };
+                if (period.TryGetProperty("assignment", out var assignments) && assignments.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var assignment in assignments.EnumerateArray())
+                    {
+                        var title = ProfileValue(assignment, "title", "assignment_title", "name") ??
+                            ("Assignment " + (ProfileValue(assignment, "assignment_id", "id") ?? ""));
+                        var assignmentGrade = ProfileValue(assignment, "grade", "calculated_grade");
+                        var max = ProfileValue(assignment, "max_points");
+                        var label = string.IsNullOrWhiteSpace(assignmentGrade) ? title :
+                            $"{title} · {(string.IsNullOrWhiteSpace(max) ? assignmentGrade : assignmentGrade + " / " + max)}";
+                        var assignmentNode = new TreeViewNode { Content = label };
+                        var comment = ProfileValue(assignment, "comment");
+                        if (!string.IsNullOrWhiteSpace(comment))
+                            assignmentNode.Children.Add(new TreeViewNode { Content = StripMarkup(comment) });
+                        periodNode.Children.Add(assignmentNode);
+                    }
+                }
+                if (periodNode.Children.Count == 0)
+                    periodNode.Children.Add(new TreeViewNode { Content = "No assignments" });
+                nodes.Add(periodNode);
             }
         }
         if (section.TryGetProperty("grading_category", out var categories) && categories.ValueKind == JsonValueKind.Array)
         {
+            var categoryNode = new TreeViewNode { Content = "Grading categories" };
             foreach (var category in categories.EnumerateArray())
             {
                 var name = ProfileValue(category, "title", "name") ?? "Category";
                 var grade = ProfileValue(category, "grade");
-                content.Children.Add(Text(string.IsNullOrWhiteSpace(grade) ? name : name + ": " + grade, 12));
+                categoryNode.Children.Add(new TreeViewNode
+                {
+                    Content = string.IsNullOrWhiteSpace(grade) ? name : $"{name}: {grade}"
+                });
             }
+            nodes.Add(categoryNode);
         }
-        if (content.Children.Count == 0) content.Children.Add(Text("No grade details were returned for this course.", 13));
-        return content;
     }
 
     private UIElement BuildGradesPage()
@@ -3088,47 +3673,210 @@ public sealed partial class MainWindow : Window
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         root.Children.Add(Text("Grades", 24, true));
-        var list = new ListView { SelectionMode = ListViewSelectionMode.None,
-            IsItemClickEnabled = false, HorizontalContentAlignment = HorizontalAlignment.Stretch };
-        AutomationProperties.SetAutomationId(list, "SchoologyGradesCourseList");
-        Grid.SetRow(list, 1); root.Children.Add(list);
+        var tree = new TreeView { HorizontalAlignment = HorizontalAlignment.Stretch,
+            VerticalAlignment = VerticalAlignment.Stretch };
+        AutomationProperties.SetAutomationId(tree, "SchoologyGradesTree");
+        Grid.SetRow(tree, 1); root.Children.Add(tree);
+        var courses = new Dictionary<TreeViewNode, SchoologyEntity>();
         foreach (var course in _courses)
         {
-            var content = new StackPanel { Spacing = 8, Margin = new Thickness(12, 8, 12, 12) };
-            var expander = new Expander { Header = course.Name, IsExpanded = false, Content = content,
-                HorizontalAlignment = HorizontalAlignment.Stretch };
-            bool loaded = false;
-            async Task LoadGradesAsync()
-            {
-                if (loaded || _session is null) return;
-                loaded = true;
-                content.Children.Clear();
-                content.Children.Add(Text("Loading grades…", 13));
-                try
-                {
-                    using var document = await _api.GetUserGradesAsync(_session);
-                    var sections = SchoologyApiClient.ReadRecords(document.RootElement, "section", "sections");
-                    var section = sections.FirstOrDefault(record =>
-                        JsonLong(record.Data, "section_id", "sectionId", "id") == course.Id);
-                    content.Children.Clear();
-                    if (section is null) content.Children.Add(Text("No grades were returned for this course.", 13));
-                    else content.Children.Add(BuildGradeDetails(section.Data, expandPeriods: false));
-                }
-                catch (Exception ex)
-                {
-                    loaded = false;
-                    content.Children.Clear();
-                    content.Children.Add(Text($"Unable to load grades: {ex.Message}", 13));
-                    content.Children.Add(Action("Retry", async (_, _) => await LoadGradesAsync()));
-                }
-            }
-            expander.Expanding += async (_, _) => await LoadGradesAsync();
-            list.Items.Add(new ListViewItem { Content = expander, HorizontalContentAlignment = HorizontalAlignment.Stretch });
+            var node = new TreeViewNode { Content = course.Name, HasUnrealizedChildren = true };
+            node.Children.Add(new TreeViewNode { Content = "Expand to load grades" });
+            courses[node] = course;
+            tree.RootNodes.Add(node);
         }
-        if (_courses.Count == 0) list.Items.Add(new ListViewItem { Content = Surface(Text("No courses are available for grades.")) });
+        if (_courses.Count == 0) tree.RootNodes.Add(new TreeViewNode { Content = "No grades" });
+        tree.Expanding += async (_, args) =>
+        {
+            if (!courses.TryGetValue(args.Node, out var course) || !args.Node.HasUnrealizedChildren) return;
+            args.Node.HasUnrealizedChildren = false;
+            args.Node.Children.Clear();
+            args.Node.Children.Add(new TreeViewNode { Content = "Loading grades…" });
+            try
+            {
+                if (_session is null) throw new InvalidOperationException("Sign in to view grades.");
+                using var document = await _api.GetUserGradesAsync(_session);
+                var sections = SchoologyApiClient.ReadRecords(document.RootElement, "section", "sections");
+                var section = sections.FirstOrDefault(record =>
+                    JsonLong(record.Data, "section_id", "sectionId", "id") == course.Id);
+                args.Node.Children.Clear();
+                if (section is null) args.Node.Children.Add(new TreeViewNode { Content = "No grades" });
+                else PopulateGradeTreeNodes(args.Node.Children, section.Data, false);
+                if (args.Node.Children.Count == 0) args.Node.Children.Add(new TreeViewNode { Content = "No grades" });
+            }
+            catch (Exception ex)
+            {
+                args.Node.Children.Clear();
+                args.Node.Children.Add(new TreeViewNode { Content = $"Unable to load grades: {ex.Message}" });
+                args.Node.IsExpanded = false;
+                args.Node.HasUnrealizedChildren = true;
+            }
+        };
         return root;
     }
 
+    private static string NormalizeSchoologyWebUrl(string value)
+    {
+        var raw = value.Trim();
+        if (raw.StartsWith("//", StringComparison.Ordinal)) raw = "https:" + raw;
+        if (Uri.TryCreate(raw, UriKind.Absolute, out var absolute))
+        {
+            if (absolute.Scheme == Uri.UriSchemeHttp && IsSchoologyWebHost(absolute.Host))
+                return new UriBuilder(absolute) { Scheme = Uri.UriSchemeHttps, Port = -1 }.Uri.AbsoluteUri;
+            return absolute.AbsoluteUri;
+        }
+        return new Uri(new Uri("https://app.schoology.com/"), raw.TrimStart('/')).AbsoluteUri;
+    }
+
+    private void UpdateSharedWebViewTheme()
+    {
+        if (_sharedWebView is null) return;
+        try
+        {
+            var core = _sharedWebView.CoreWebView2;
+            if (core is null) return;
+            core.Profile.PreferredColorScheme =
+                _root.ActualTheme == ElementTheme.Dark
+                    ? CoreWebView2PreferredColorScheme.Dark
+                    : CoreWebView2PreferredColorScheme.Light;
+        }
+        catch (InvalidOperationException) { }
+    }
+
+    private static bool IsSchoologyWebHost(string host)
+    {
+        host = host.ToLowerInvariant();
+        return host == "schoology.com" || host.EndsWith(".schoology.com") ||
+            host == "schoologyca.com" || host.EndsWith(".schoologyca.com") || host == "lms.lausd.net";
+    }
+
+    private async Task OpenSharedWebViewAsync(string rawUrl, string title, bool allowLtiExternal = false,
+        System.Action? onBack = null)
+    {
+        try
+        {
+
+        if (_session is null) throw new InvalidOperationException("Sign in to open Schoology web content.");
+        if (!Uri.TryCreate(NormalizeSchoologyWebUrl(rawUrl), UriKind.Absolute, out var uri) ||
+            uri.Scheme != Uri.UriSchemeHttps || !string.IsNullOrEmpty(uri.UserInfo))
+            throw new InvalidOperationException("Only secure HTTPS links can be opened in the shared Schoology view.");
+        if (!IsSchoologyWebHost(uri.Host) && !allowLtiExternal)
+        {
+            await Windows.System.Launcher.LaunchUriAsync(uri);
+            return;
+        }
+
+        _sharedWebView ??= new WebView2
+        {
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            VerticalAlignment = VerticalAlignment.Stretch,
+            MinWidth = 400,
+            MinHeight = 320,
+            CreationProperties = new CoreWebView2CreationProperties
+            {
+                UserDataFolder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "Schoology", "WebView2")
+            }
+        };
+        await _sharedWebView.EnsureCoreWebView2Async();
+        UpdateSharedWebViewTheme();
+        _sharedWebView.CoreWebView2.Settings.AreDevToolsEnabled = false;
+        _sharedWebView.CoreWebView2.Settings.IsWebMessageEnabled = false;
+        _sharedWebView.CoreWebView2.Settings.IsStatusBarEnabled = false;
+        if (!_sharedWebViewInitialized || _sharedWebViewSessionUserId != _session.UserId)
+        {
+            _sharedWebView.CoreWebView2.CookieManager.DeleteAllCookies();
+            _sharedWebViewInitialized = false;
+            _sharedWebViewSessionUserId = _session.UserId;
+        }
+        // Refresh the OAuth-backed browser session before each embedded launch so
+        // the persistent WebView never silently reuses an expired SESS cookie.
+        var cookies = await _auth.GetWebSessionCookiesAsync(_session);
+        foreach (var item in cookies)
+        {
+            var cookie = _sharedWebView.CoreWebView2.CookieManager.CreateCookie(
+                item.Name, item.Value, item.Domain, item.Path);
+            cookie.IsHttpOnly = item.HttpOnly;
+            cookie.IsSecure = item.Secure;
+            _sharedWebView.CoreWebView2.CookieManager.AddOrUpdateCookie(cookie);
+        }
+        var installedCookies = await _sharedWebView.CoreWebView2.CookieManager.GetCookiesAsync(_auth.WebSessionUrl);
+        if (!installedCookies.Any(cookie => cookie.Name.Equals("SESS", StringComparison.OrdinalIgnoreCase) &&
+            !string.IsNullOrWhiteSpace(cookie.Value)))
+            throw new InvalidOperationException("The shared Schoology WebView did not receive a usable SESS cookie. Sign in again and retry.");
+        _sharedWebViewInitialized = true;
+        _sharedWebViewAllowLti = allowLtiExternal;
+        if (!_sharedWebViewInitialized) throw new InvalidOperationException("The Schoology browser session could not be initialized.");
+
+        if (_sharedWebViewStatus is null)
+        {
+            _sharedWebView.CoreWebView2.NavigationStarting += async (_, args) =>
+            {
+                if (!Uri.TryCreate(args.Uri, UriKind.Absolute, out var destination)) return;
+                if (destination.Scheme != Uri.UriSchemeHttps)
+                {
+                    args.Cancel = true;
+                    return;
+                }
+                if (!_sharedWebViewAllowLti && !IsSchoologyWebHost(destination.Host))
+                {
+                    args.Cancel = true;
+                    await Windows.System.Launcher.LaunchUriAsync(destination);
+                    return;
+                }
+                if (_sharedWebViewStatus is not null) _sharedWebViewStatus.Text = "Loading…";
+            };
+            _sharedWebView.CoreWebView2.NavigationCompleted += (_, args) =>
+            {
+                if (_sharedWebViewStatus is not null)
+                    _sharedWebViewStatus.Text = args.IsSuccess ? " " : "Unable to load this page. Use Reload to try again.";
+            };
+            _sharedWebView.CoreWebView2.NewWindowRequested += async (_, args) =>
+            {
+                args.Handled = true;
+                if (!Uri.TryCreate(args.Uri, UriKind.Absolute, out var popup) ||
+                    popup.Scheme != Uri.UriSchemeHttps || !string.IsNullOrEmpty(popup.UserInfo)) return;
+                if (_sharedWebViewAllowLti || IsSchoologyWebHost(popup.Host))
+                    _sharedWebView.CoreWebView2.Navigate(popup.AbsoluteUri);
+                else
+                    await Windows.System.Launcher.LaunchUriAsync(popup);
+            };
+        }
+
+        var host = new Grid { RowSpacing = 8, Margin = new Thickness(12) };
+        host.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        host.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        var toolbar = new Grid { ColumnSpacing = 10 };
+        toolbar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        toolbar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        toolbar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        var back = Action("‹ Back", (_, _) => (onBack ?? (() => ShowHome(_section)))());
+        back.HorizontalAlignment = HorizontalAlignment.Left;
+        toolbar.Children.Add(back);
+        var heading = Text(title, 16, true);
+        Grid.SetColumn(heading, 1); toolbar.Children.Add(heading);
+        _sharedWebViewStatus = Text("Loading…", 11);
+        _sharedWebViewStatus.Foreground = ThemeBrush("SchoologyMutedTextBrush");
+        Grid.SetColumn(_sharedWebViewStatus, 2); toolbar.Children.Add(_sharedWebViewStatus);
+        var reload = Action("Reload", (_, _) => _sharedWebView?.CoreWebView2?.Reload());
+        reload.HorizontalAlignment = HorizontalAlignment.Right;
+        Grid.SetColumn(reload, 3); toolbar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        toolbar.Children.Add(reload);
+        host.Children.Add(toolbar);
+
+        if (_sharedWebView.Parent is Panel oldParent) oldParent.Children.Remove(_sharedWebView);
+        Grid.SetRow(_sharedWebView, 1);
+        host.Children.Add(_sharedWebView);
+        Grid.SetRow(host, 0);
+        if (_sectionFrame is not null) NavigateMainSection(host, title);
+        else Reset(BuildApplicationShell(title, host));
+        _sharedWebView.CoreWebView2.Navigate(uri.AbsoluteUri);
+        }
+        catch (Exception ex)
+        {
+            await ShowApiErrorAsync("Unable to open Schoology web content", ex.Message);
+        }
+    }
     private UIElement BuildProfilePage()
     {
         var panel = new StackPanel { Spacing = 12, Margin = new Thickness(24) };

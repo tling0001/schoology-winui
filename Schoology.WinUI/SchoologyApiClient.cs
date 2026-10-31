@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text;
 using System.Text.Json;
 
 namespace Schoology.WinUI;
@@ -108,6 +109,51 @@ internal sealed class SchoologyApiClient
         return _auth.SendApiJsonAsync(session, HttpMethod.Post, $"{realm}/{entityId}/updates/{updateId}/comments",
             new Dictionary<string, string> { ["comment"] = comment, ["parent_id"] = "0" }, cancellationToken);
     }
+
+    internal Task<JsonDocument> GetNotificationsAsync(SchoologyAuthService.Session session, CancellationToken ct = default) =>
+        _auth.GetApiJsonAsync(session, "notifications", null, ct);
+    internal Task<JsonDocument> MarkNotificationsReadAsync(SchoologyAuthService.Session session, CancellationToken ct = default) =>
+        _auth.SendApiJsonAsync(session, HttpMethod.Post, "notifications/read", null, ct);
+    internal Task<JsonDocument> GetFriendRequestsAsync(SchoologyAuthService.Session session, CancellationToken ct = default) =>
+        _auth.GetApiJsonAsync(session, $"users/{session.UserId}/requests/friends", new Dictionary<string, string> { ["start"] = "0", ["limit"] = "200" }, ct);
+    internal Task<JsonDocument> GetGroupInvitationsAsync(SchoologyAuthService.Session session, CancellationToken ct = default) =>
+        _auth.GetApiJsonAsync(session, $"users/{session.UserId}/invites/groups", new Dictionary<string, string> { ["start"] = "0", ["limit"] = "200" }, ct);
+    internal Task<JsonDocument> GetSectionInvitationsAsync(SchoologyAuthService.Session session, CancellationToken ct = default) =>
+        _auth.GetApiJsonAsync(session, $"users/{session.UserId}/invites/sections", new Dictionary<string, string> { ["start"] = "0", ["limit"] = "200" }, ct);
+    internal Task<JsonDocument> RespondToRequestAsync(SchoologyAuthService.Session session, string type, long id, bool accept, CancellationToken ct = default)
+    {
+        if (id <= 0) throw new InvalidOperationException("This request is missing its ID.");
+        var action = accept ? "accept" : "deny";
+        var (path, payload) = type switch
+        {
+            "friend" => ($"users/{session.UserId}/requests/friends/{id}", (object)new { request = new { request_action = action } }),
+            "group" => ($"users/{session.UserId}/invites/groups/{id}", (object)new { invite = new { invite_action = action } }),
+            "section" => ($"users/{session.UserId}/invites/sections/{id}", (object)new { invite = new { invite_action = action } }),
+            _ => throw new InvalidOperationException("This request type is not supported.")
+        };
+        return _auth.SendApiJsonBodyAsync(session, HttpMethod.Put, path, payload, ct);
+    }
+    internal Task<JsonDocument> GetResourceCollectionsAsync(SchoologyAuthService.Session session, CancellationToken ct = default) =>
+        _auth.GetApiJsonAsync(session, "collections", new Dictionary<string, string> { ["limit"] = "200" }, ct);
+    internal Task<JsonDocument> GetResourceAppsAsync(SchoologyAuthService.Session session, CancellationToken ct = default) =>
+        _auth.GetApiJsonAsync(session, "resource_apps", new Dictionary<string, string> { ["limit"] = "200" }, ct);
+    internal Task<JsonDocument> GetCollectionResourcesAsync(SchoologyAuthService.Session session, long collectionId, long folderId = 0, CancellationToken ct = default)
+    {
+        var query = new Dictionary<string, string> { ["start"] = "0", ["limit"] = "200", ["with_attachments"] = "TRUE" };
+        if (folderId > 0) query["f"] = folderId.ToString(CultureInfo.InvariantCulture);
+        return _auth.GetApiJsonAsync(session, $"collections/{collectionId}/resources", query, ct);
+    }
+    internal Task<JsonDocument> LaunchResourceAppAsync(SchoologyAuthService.Session session, long appId, CancellationToken ct = default) =>
+        _auth.GetApiJsonAtVersionAsync(session, "v2", $"resources/applications/{appId}/launch", null, ct);
+
+    internal Task<JsonDocument> GetAssignmentAsync(
+        SchoologyAuthService.Session session, long sectionId, long assignmentId, CancellationToken ct = default) =>
+        _auth.GetApiJsonAsync(session, $"sections/{sectionId}/assignments/{assignmentId}",
+            new Dictionary<string, string> { ["richtext"] = "1", ["with_attachments"] = "TRUE" }, ct);
+
+    internal Task<JsonDocument> GetDocumentAsync(
+        SchoologyAuthService.Session session, long sectionId, long documentId, CancellationToken ct = default) =>
+        _auth.GetApiJsonAsync(session, $"sections/{sectionId}/documents/{documentId}", null, ct);
 
     private async Task<IReadOnlyList<SchoologyEntity>> GetEntitiesAsync(
         SchoologyAuthService.Session session, string path, string[] collectionKeys,
@@ -270,5 +316,123 @@ internal sealed partial class SchoologyAuthService
         {
             throw new InvalidOperationException("Schoology returned an unreadable response for this page.");
         }
+    }
+}
+
+
+internal sealed partial class SchoologyAuthService
+{
+    internal string WebSessionUrl => $"https://{WebHost}/";
+
+    internal sealed record WebSessionCookie(string Name, string Value, string Domain, string Path, bool HttpOnly, bool Secure);
+
+    internal async Task<IReadOnlyList<WebSessionCookie>> GetWebSessionCookiesAsync(Session session, CancellationToken ct = default)
+    {
+        var defaultDomain = WebHost.EndsWith("schoologyca.com", StringComparison.OrdinalIgnoreCase) ? ".schoologyca.com" : ".schoology.com";
+        var url = $"https://{ApiHost}/v1/sessionstart?for_domain={Uri.EscapeDataString(WebHost)}";
+        using var response = await SendSignedRequestAsync(HttpMethod.Get, url, () => null, session.Token, session.Secret, null, ct);
+        var body = await response.Content.ReadAsStringAsync(ct);
+        if (!response.IsSuccessStatusCode)
+            throw new InvalidOperationException(ReadableError(body, "Schoology could not prepare the browser session", response.StatusCode));
+        var cookies = new Dictionary<string, WebSessionCookie>(StringComparer.OrdinalIgnoreCase);
+        void Add(string name, string value, string domain, string path, bool httpOnly, bool secure)
+        {
+            domain = string.IsNullOrWhiteSpace(domain) ? defaultDomain : domain.Trim();
+            path = string.IsNullOrWhiteSpace(path) || !path.StartsWith('/') ? "/" : path;
+            var host = domain.TrimStart('.').ToLowerInvariant();
+            var targetHost = WebHost.ToLowerInvariant();
+            var validDomain = host == "schoology.com" || host.EndsWith(".schoology.com") ||
+                host == "schoologyca.com" || host.EndsWith(".schoologyca.com");
+            var appliesToTarget = targetHost == host || targetHost.EndsWith("." + host, StringComparison.Ordinal);
+            if (string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(value) ||
+                name.Any(char.IsControl) || name.IndexOfAny([';', '=', ',']) >= 0 ||
+                value.Any(char.IsControl) || value.IndexOfAny([';', ',']) >= 0 ||
+                !validDomain || !appliesToTarget) return;
+            // Tauri explicitly scopes the session cookie to Schoology sibling hosts.
+            domain = "." + host;
+            // The Tauri/Android web session installs all Schoology cookies as Secure.
+            cookies[name] = new(name, value, domain, path, httpOnly, true);
+        }
+        if (response.Headers.TryGetValues("Set-Cookie", out var headers))
+        foreach (var header in headers)
+        {
+            var parts = header.Split(';', StringSplitOptions.TrimEntries);
+            var pair = parts.FirstOrDefault();
+            var split = pair?.IndexOf('=') ?? -1;
+            if (split <= 0) continue;
+            var domain = defaultDomain; var path = "/"; var httpOnly = false; var secure = false;
+            foreach (var attr in parts.Skip(1))
+            {
+                var eq = attr.IndexOf('='); var key = (eq >= 0 ? attr[..eq] : attr).Trim();
+                var value = eq >= 0 ? attr[(eq + 1)..].Trim() : "";
+                if (key.Equals("Domain", StringComparison.OrdinalIgnoreCase) && value.Length > 0) domain = value;
+                else if (key.Equals("Path", StringComparison.OrdinalIgnoreCase) && value.StartsWith('/')) path = value;
+                else if (key.Equals("HttpOnly", StringComparison.OrdinalIgnoreCase)) httpOnly = true;
+                else if (key.Equals("Secure", StringComparison.OrdinalIgnoreCase)) secure = true;
+            }
+            Add(pair![..split], pair[(split + 1)..], domain, path, httpOnly, secure);
+        }
+        try
+        {
+            using var document = JsonDocument.Parse(body);
+            var root = document.RootElement; JsonElement array = default;
+            if (root.ValueKind == JsonValueKind.Object && !root.TryGetProperty("cookie", out array))
+                root.TryGetProperty("cookies", out array);
+            if (array.ValueKind == JsonValueKind.Array)
+            foreach (var item in array.EnumerateArray())
+            {
+                string? Get(params string[] keys)
+                {
+                    foreach (var key in keys)
+                        if (item.TryGetProperty(key, out var v) && v.ValueKind is JsonValueKind.String or JsonValueKind.Number) return v.ToString();
+                    return null;
+                }
+                Add(Get("key", "name") ?? "", Get("value", "val") ?? "", Get("domain") ?? defaultDomain,
+                    Get("path") ?? "/", Get("httponly", "http_only") == "true", Get("secure") == "true");
+            }
+        }
+        catch (JsonException) { }
+        var mobilePair = MobileCookie.Split('=', 2);
+        if (mobilePair.Length == 2) Add(mobilePair[0], mobilePair[1], defaultDomain, "/", false, true);
+        if (cookies.Count == 0) throw new InvalidOperationException("Schoology did not return browser session cookies.");
+        return cookies.Values.ToArray();
+    }
+
+    internal async Task<JsonDocument> GetApiJsonAtVersionAsync(
+        Session session, string version, string path, IReadOnlyDictionary<string, string>? query,
+        CancellationToken ct = default)
+    {
+        if (version is not ("v1" or "v2")) throw new InvalidOperationException("The Schoology API version is invalid.");
+        var normalized = path.TrimStart('/');
+        if (normalized.Length == 0 || normalized.Split('/').Any(x => x is "." or "..") ||
+            normalized.Any(c => !(char.IsAsciiLetterOrDigit(c) || c is '/' or '_' or '-')))
+            throw new InvalidOperationException("The Schoology API path is invalid.");
+        var builder = new UriBuilder($"https://{ApiHost}/{version}/{normalized}");
+        if (query is { Count: > 0 })
+            builder.Query = string.Join("&", query.OrderBy(pair => pair.Key, StringComparer.Ordinal)
+                .Select(pair => $"{Uri.EscapeDataString(pair.Key)}={Uri.EscapeDataString(pair.Value)}"));
+        using var response = await SendSignedRequestAsync(HttpMethod.Get, builder.Uri.AbsoluteUri, () => null,
+            session.Token, session.Secret, null, ct);
+        var body = await response.Content.ReadAsStringAsync(ct);
+        if (!response.IsSuccessStatusCode)
+            throw new InvalidOperationException(ReadableError(body, "Schoology could not load this resource", response.StatusCode));
+        try { return JsonDocument.Parse(body); }
+        catch (JsonException) { throw new InvalidOperationException("Schoology returned an unreadable response for this resource."); }
+    }
+
+    internal async Task<JsonDocument> SendApiJsonBodyAsync(Session session, HttpMethod method, string path, object payload, CancellationToken ct = default)
+    {
+        var normalized = path.TrimStart('/');
+        if (normalized.Length == 0 || normalized.Split('/').Any(x => x is "." or "..") ||
+            normalized.Any(c => !(char.IsAsciiLetterOrDigit(c) || c is '/' or '_' or '-')))
+            throw new InvalidOperationException("The Schoology API path is invalid.");
+        using var response = await SendSignedRequestAsync(method, $"https://{ApiHost}/v1/{normalized}",
+            () => new StringContent(JsonSerializer.Serialize(payload), Encoding.UTF8, "application/json"),
+            session.Token, session.Secret, null, ct);
+        var body = await response.Content.ReadAsStringAsync(ct);
+        if (!response.IsSuccessStatusCode)
+            throw new InvalidOperationException(ReadableError(body, "Schoology could not update this request", response.StatusCode));
+        try { return JsonDocument.Parse(string.IsNullOrWhiteSpace(body) ? "{}" : body); }
+        catch (JsonException) { return JsonDocument.Parse("{}"); }
     }
 }
