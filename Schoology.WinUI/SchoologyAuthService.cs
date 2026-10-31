@@ -25,7 +25,7 @@ internal sealed partial class SchoologyAuthService
 
         var candidate = rawUrl.Trim();
         Uri uri;
-        if (candidate.StartsWith("/", StringComparison.Ordinal))
+        if (candidate.StartsWith('/'))
             uri = new Uri($"https://{ApiHost}{candidate}");
         else if (!Uri.TryCreate(candidate, UriKind.Absolute, out uri!))
             throw new InvalidOperationException("Schoology returned an invalid attachment URL.");
@@ -111,10 +111,11 @@ internal sealed partial class SchoologyAuthService
             host.EndsWith(".cloudfront.net", StringComparison.Ordinal) ||
             host == "storage.googleapis.com" || host.EndsWith(".storage.googleapis.com", StringComparison.Ordinal);
         var query = uri.Query.ToLowerInvariant();
-        var signed = new[] { "signature=", "awsaccesskeyid=", "x-amz-signature=", "x-goog-signature=", "key-pair-id=" }
-            .Any(key => query.Contains(key, StringComparison.Ordinal));
+        var signed = SignedUrlQueryMarkers.Any(key => query.Contains(key, StringComparison.Ordinal));
         return allowedHost && signed;
     }
+
+    private static readonly string[] SignedUrlQueryMarkers = { "signature=", "awsaccesskeyid=", "x-amz-signature=", "x-goog-signature=", "key-pair-id=" };
 
     private const string ConsumerKey = "998121f221d5dc0f4956ee6946d27d5e04e55635e";
     private const string ConsumerSecret = "5cff9d3780d64695d762ba8e05a34e9e";
@@ -328,7 +329,7 @@ internal sealed partial class SchoologyAuthService
         string? scannedQrData,
         CancellationToken cancellationToken,
         IReadOnlyDictionary<string, string>? formParameters = null,
-        ICollection<string>? redirectSetCookieHeaders = null)
+        List<string>? redirectSetCookieHeaders = null)
     {
         var currentUri = new Uri(rawUrl, UriKind.Absolute);
         var expectedHost = currentUri.IdnHost;

@@ -26,7 +26,7 @@ using Microsoft.Windows.AppNotifications.Builder;
 
 namespace Schoology.WinUI;
 
-public sealed partial class MainWindow : Window
+public sealed partial class MainWindow : Window, IAsyncDisposable
 {
     private readonly Grid _root;
     private readonly DispatcherTimer _splashTimer;
@@ -92,8 +92,9 @@ public sealed partial class MainWindow : Window
         var windowHandle = Win32Interop.GetWindowFromWindowId(AppWindow.Id);
         _previousWindowProc = SetWindowLongPtr(windowHandle, GwlWndProc, _windowProcDelegate);
         ConfigureStartupRegistration();
-        Closed += (_, _) =>
+        Closed += async (_, _) =>
         {
+            await DisposeAsync();
             DestroyTrayIcon();
             try { AppNotificationManager.Default.Unregister(); } catch (Exception ex) { App.WriteStartupLog("Could not unregister app notifications during shutdown.", ex); }
         };
@@ -1026,6 +1027,11 @@ public sealed partial class MainWindow : Window
             status.Text = ex.Message;
             start.IsEnabled = true;
         }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        await StopQrScannerAsync();
     }
 
     private async Task StopQrScannerAsync()
@@ -3868,8 +3874,8 @@ public sealed partial class MainWindow : Window
     private static string NormalizeSchoologyImageUrl(string value)
     {
         var url = value.Trim();
-        if (url.StartsWith("//")) return "https:" + url;
-        if (url.StartsWith("/")) return "https://app.schoology.com" + url;
+        if (url.StartsWith("//", StringComparison.Ordinal)) return "https:" + url;
+        if (url.StartsWith('/')) return "https://app.schoology.com" + url;
         if (url.StartsWith("http://", StringComparison.OrdinalIgnoreCase)) return "https://" + url[7..];
         return url;
     }
@@ -5034,7 +5040,7 @@ public sealed partial class MainWindow : Window
         return tree;
     }
 
-    private void PopulateGradeTreeNodes(IList<TreeViewNode> nodes, JsonElement section, bool expandPeriods)
+    private static void PopulateGradeTreeNodes(IList<TreeViewNode> nodes, JsonElement section, bool expandPeriods)
     {
         if (section.ValueKind != JsonValueKind.Object) return;
         if (section.TryGetProperty("final_grade", out var finalGrades) && finalGrades.ValueKind == JsonValueKind.Array)
@@ -5177,8 +5183,8 @@ public sealed partial class MainWindow : Window
     private static bool IsSchoologyWebHost(string host)
     {
         host = host.ToLowerInvariant();
-        return host == "schoology.com" || host.EndsWith(".schoology.com") ||
-            host == "schoologyca.com" || host.EndsWith(".schoologyca.com") || host == "lms.lausd.net";
+        return host == "schoology.com" || host.EndsWith(".schoology.com", StringComparison.Ordinal) ||
+            host == "schoologyca.com" || host.EndsWith(".schoologyca.com", StringComparison.Ordinal) || host == "lms.lausd.net";
     }
 
     private async Task OpenSharedWebViewAsync(string rawUrl, string title, bool allowLtiExternal = false,

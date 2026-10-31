@@ -1,6 +1,11 @@
 # Release notes
 
-## 2026.10.0-port.26
+## [2026.10.0-port.27] - 2026-10-31
+
+- Fix release-note section matching so GitHub Actions can publish versioned releases.
+- Resolve the reported .NET analyzer warnings for static helpers, locale-independent URL matching, QR scanner lifetime, and repeated query-marker allocations.
+
+## [2026.10.0-port.26] - 2026-10-31
 
 - Fix WinUI 3 SplitButton primary-action event subscriptions so the x64 and ARM64 builds compile.
 - Add the shared discussion/event comments ListView with an inline comment composer, threaded replies, profile-aware comment rows, and refresh after posting.
