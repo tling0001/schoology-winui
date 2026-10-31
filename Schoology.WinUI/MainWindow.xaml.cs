@@ -1328,7 +1328,9 @@ public sealed partial class MainWindow : Window
                 nav.MenuItems.Add(new NavigationViewItemSeparator());
             var item = new NavigationViewItem { Content = entry.Name == "Upcoming" ? "Calendar" : entry.Name,
                 Tag = entry.Name == "Upcoming" ? "Calendar" : entry.Name,
-                Icon = entry.Name == "Notifications" ? new SymbolIcon(Symbol.Ringer) : new SymbolIcon(entry.Icon) };
+                Icon = entry.Name == "Notifications"
+                    ? new FontIcon { Glyph = "\uE7F4", FontFamily = new FontFamily("Segoe Fluent Icons"), FontSize = 18 }
+                    : new SymbolIcon(entry.Icon) };
             // Parent rows only expand/collapse. Selecting a specific child performs navigation.
             item.SelectsOnInvoked = entry.Name is not ("Courses" or "Groups");
             if (entry.Name is "Courses" or "Groups") item.IsExpanded = false;
@@ -2758,7 +2760,7 @@ public sealed partial class MainWindow : Window
                 var row = new Grid { ColumnSpacing = 12 };
                 row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(28) });
                 row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-                row.Children.Add(new SymbolIcon(Symbol.Apps)
+                row.Children.Add(new SymbolIcon(Symbol.AllApps)
                 {
                     Width = 22, Height = 22, Foreground = ThemeBrush("SchoologyBlueBrush"),
                     VerticalAlignment = VerticalAlignment.Center
